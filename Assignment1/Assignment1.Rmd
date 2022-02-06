@@ -1,9 +1,13 @@
 ---
 title: "Assignment 1"
+author: Evgeniya Gorobets
+date: "`r format(Sys.time(), '%d %b %Y')`"
 output:
   html_document:
     df_print: paged
 ---
+
+TO DO: Add a header (use the format from BCB410)
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
 
