@@ -1,0 +1,173 @@
+---
+title: "Intro to R Packages"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Installing & Exploring Packages - seqinr
+
+This notebook was created based on instructions at https://bcb420-2022.github.io/R_basics/r-install.html#task-5---experiment-with-rstudio-and-packages.
+
+### Installing & Loading Packages
+
+```{r}
+library()
+```
+
+By running the command above and examining the page that it opens, I see that seqinr is not installed.
+
+<br />
+
+```{r}
+search()
+```
+
+This command showed that I have ten packages loaded.
+
+<br />
+
+```{r}
+?vignette
+
+```
+
+This opened a help page in the 'Help' tab that describes how to view and list vignettes.
+
+<br />
+
+```{r}
+?install.packages
+if (! requireNamespace("seqinr", quietly=TRUE)) {
+  install.packages("seqinr",repos="https://cran.rstudio.com/")
+}
+```
+
+The above code opened a help page which described how to install new packages. The second command successfully installed seqinr (and will only install it if it is not already installed).
+
+<br />
+
+### Listing Functions and Datasets
+
+```{r}
+library(help="seqinr") 
+
+library(seqinr)
+ls("package:seqinr")
+```
+
+The top command opened the vignette for seqinr in a new page. 
+The bottom two commands allowed me to list the 203 functions available in seqinr.
+
+<br />
+
+```{r}
+?seqinr::a 
+seqinr::a("Tyr")
+```
+
+The above commands opened help documentation for the `a` method in `seqinr`. 
+This method converts AA 3-letter codes to 1-letter codes (ex. Tyr -> Y).
+
+<br />
+
+```{r}
+seqinr::words(3, c("A", "G", "C", "U"))
+```
+
+The above code produced a vector with all possible 3-letter combinations of 
+"A", "G", "C", and "U". In other words, it produced all possible RNA codons.
+
+<br />
+
+```{r}
+?data
+```
+
+According to the help page, the `data` function loads or lists available data sets in a package.
+
+<br />
+
+```{r}
+data(package="seqinr")
+```
+
+One dataset available in the `seqinr` package is ec999, with has "999 coding sequences from E. coli".
+
+<br />
+
+```{r}
+data(aaindex, package="seqinr")   
+```
+
+The aaindex dataset lists 544 physicochemical and biological properties for the 20 AAs (ex. conformation parameter of inner helix, average volume of buried residue, melting point, size, etc.).
+
+<br />
+
+```{r}
+?aaindex
+```
+
+The above command opens the help documentation for the `aaindex` dataset.
+
+<br />
+
+```{r}
+aaindex$FASG890101
+aaindex$PONJ960101 
+```
+
+FASG890101 and PONJ960101 are the accession numbers of two properties (of the 544) in the `aaindex` db. The first property describes hydrophobicity of the AAs, and the second property describes the average volumes of the AAs.
+
+<br />
+
+```{r}
+plot(aaindex$FASG890101$I,
+     aaindex$PONJ960101$I,
+     xlab="hydrophobicity", ylab="volume", type="n")
+text(aaindex$FASG890101$I,
+     aaindex$PONJ960101$I,
+     labels=a(names(aaindex$FASG890101$I)))
+```
+
+This command plots the hydrophobicity vs. the volume of each AA.
+
+<br />
+
+```{r}
+seqinr::choosebank("swissprot")
+mySeq <- seqinr::query("mySeq", "N=MBP1_YEAST")
+mbp1 <- seqinr::getSequence(mySeq)
+seqinr::closebank()
+x <- seqinr::AAstat(mbp1[[1]])
+barplot(sort(x$Compo), cex.names = 0.6)
+```
+
+This code block fetches the MBP1_YEAST sequence from the swissprot databank, and then plots some statistics about the AAs found in the sequence.
+
+<br />
+
+## Finding Packages -- sos
+
+```{r}
+if (! requireNamespace("sos", quietly=TRUE)) {
+    install.packages("sos")
+}
+library(help = sos)       # basic information
+browseVignettes("sos")    # available vignettes
+ 
+sos::findFn("moving average")
+```
+
+The code above installed the `sos` package and listed 300 packages related to "moving average".
+
+Other resources for finding packages are the CRAN Task View, Bioconductor Views, Metacran, MRAN, and Google.
+
+<br />
+
+## Self-Evaluation
+
+1. The purpose of wrapping an `install.packages` command inside a `requireNamespace` conditional block is to ensure that the package is only installed if it is not already installed. This prevents RStudio from time-consuming and unnecessary installations.
+
+<br />
+<br />
