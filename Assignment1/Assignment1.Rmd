@@ -14,6 +14,7 @@ output:
 The following code is based off slide 7 in Professor Ruth Isserlin's Lecture 3
 slides ("Finding Expression Data") (Isserlin, 2022). This is just to ensure that
 `GEOmetadb`is installed and available whenever I want to run this notebook.
+
 ```{r}
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
@@ -22,10 +23,16 @@ if (!requireNamespace("GEOmetadb", quietly = TRUE)) {
     BiocManager::install("GEOmetadb")
 }
 ```
+<br/>
 
 ### Connecting to the Database
 
-TODO: add references to this code
+The following code changes the working directory, pulls down the GEOmetadb 
+SQLite file if it is not present, and connects to the SQL database. I use 
+`options(timeout=600)` to prevent R from timing out when pulling the rather 
+large SQL meta files. The code is based on slides 8 and 10 of Professor 
+Isserlin's Lecture 3 slides (Isserlin, 2022).
+
 ```{r}
 # Change the working directory if needed
 if (getwd() == "/home/rstudio") {
@@ -39,8 +46,147 @@ if (!file.exists(sqlFilePath)) {
 }
 con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath, synchronous=NULL)
 ```
+<br/>
+
+## Exploring GEO Datasets
+
+### Fetching Recent Human RNASeq Experiment
+
+Get all GSEs that were submitted in the last 5 years (2017-2022) whose 
+organism is "Homo sapiens" and whose technology is "high-throughput sequencing".
+The code is based on slide 39 of Professor Isserlin's Lecture 3 slides 
+(Isserlin, 2022), but modified to have aliases and a more recent date clause.
+
+```{r}
+sqlQuery <- paste("SELECT DISTINCT gse.title AS gseTitle, gse.gse,",
+                  "gpl.title as gplTitle, gse.submission_date AS date,",
+                  "gse.supplementary_file AS files",
+                  "FROM gse JOIN gse_gpl on gse_gpl.gse=gse.gse",
+                  "JOIN gpl ON gse_gpl.gpl=gpl.gpl",
+                  "WHERE gpl.technology LIKE '%high-throughput sequencing%'",
+                  "AND gpl.organism LIKE '%Homo sapiens%'",
+                  "AND gse.submission_date > '2017-01-01'",
+                  "ORDER BY gse.submission_date DESC")
+results <- DBI::dbGetQuery(con, sqlQuery)
+```
+<br/>
+
+Parse through the supplementary files and only keep entries whose files have 
+the word "counts" in them.
+
+```{r}
+# Remove results with no files
+hasFiles <- which(!is.na(results$files))
+results <- lapply(results, function(col) { return(col[hasFiles]) })
+
+# Split files into character vectors
+results$files <- strsplit(results$files,";\t")
+
+# Only keep files with "counts" in the name
+results$files <- lapply(results$files, function(f) {
+  return(f[grepl("counts", f)])
+})
+
+# Remove results with no files again
+hasFiles <- unlist(lapply(results$files, function(f) { return(length(f) > 0)}))
+results <- lapply(results, function(col) { return(col[hasFiles]) })
+```
+<br/>
+
+### Exploring Human RNASeq Datasets
+
+I just want to skim through the title to find some interesting-sounding studies.
+I have some knowledge of the genetic factors involved in breast cancer so 
+focusing on a breast cancer study might be easiest for me.
+
+```{r}
+results$gseTitle[1:25]
+results$gseTitle[26:50]
+results$gseTitle[51:75]
+results$gseTitle[76:100]
+tail(results$gseTitle, n=25)
+```
+<br/>
+
+The titles that stood out to me were:
+* "Loss of the Tumor Suppressor FLCN Promotes Breast Tumor Growth by Inducing a 
+TFE3-Dependent Program Driving Warburg Effect and Angiogenesis"
+* "RNA-seq of B cells treated with recombinant CD52-Fc"
+* "Parental (F0) compared to MSC educated (F2) prostate cancer cell lines"
+* "Multiomic analysis identifies CPT1A as a potential therapeutic target in 
+platinum-refractory high grade serous ovarian cancer"
+* "MiR-129-5p downregulates HuD expression impairing neuritogenesis in 
+Amyotrophic Lateral Sclerosis" 
+* "RNA-seq analysis of the effects of BCL6-inhibiting and BCL6-degrading 
+compounds in lymphoma cell lines"
+* "Endothelial transcriptome in response to pharmacological methyltransferase 
+inhibition" 
+
+<br/>
+
+I realized after reading through these titles that some of these may be for 
+single-cell RNASeq, so I pulled up titles that explicitly mention bulk RNASeq.
+
+```{r}
+results$gseTitle[grep("bulk", results$gseTitle)]
+```
+
+Of these, "Human basal cell diversity in normal and IPF lung (bulk RNAseq)", 
+"Silencing Trisomy 21 with XIST in Neural Stem Cells Promotes Neuronal 
+Differentiation (bulk)", and "Single-cell transcriptomic analysis of tissue 
+resident memory T cells in human lung cancer [ bulk RNA-seq]" look interesting.
+
+<br/>
+
+I decided to extract the GSEs that were interesting to me into a separate list 
+so that I can explore them further.
+
+```{r}
+interestingTitles <- c(
+  paste("Loss of the Tumor Suppressor FLCN Promotes Breast Tumor Growth by",
+        "Inducing a TFE3-Dependent Program Driving Warburg Effect",
+        "and Angiogenesis"), 
+  "RNA-seq of B cells treated with recombinant CD52-Fc", 
+  "Parental (F0) compared to MSC educated (F2) prostate cancer cell lines", 
+  paste("Multiomic analysis identifies CPT1A as a potential therapeutic target",
+        "in platinum-refractory high grade serous ovarian cancer"), 
+  paste("MiR-129-5p downregulates HuD expression impairing neuritogenesis in",
+        "Amyotrophic Lateral Sclerosis"), 
+  paste("RNA-seq analysis of the effects of BCL6-inhibiting and BCL6-degrading",
+        "compounds in lymphoma cell lines"), 
+  paste("Endothelial transcriptome in response to pharmacological",
+        "methyltransferase inhibition"), 
+  "Human basal cell diversity in normal and IPF lung (bulk RNAseq)", 
+  paste("Silencing Trisomy 21 with XIST in Neural Stem Cells Promotes Neuronal",
+        "Differentiation (bulk)"), 
+  paste("Single-cell transcriptomic analysis of tissue resident memory T cells",
+        "in human lung cancer [ bulk RNA-seq]"))
+
+interestingGSEs <- which(results$gseTitle %in% interestingTitles)
+interestingResults <- lapply(results, function(col) { col[interestingGSEs] })
+rm(results) # free up some memory
+
+# How many supplemental files do each of these have?
+unlist(lapply(interestingResults$files, function(f) { length(f)}))
+# Double check the supplemental files to make sure they have counts
+interestingResults$files
+
+# One of the supplemental files is for a rat; remove it
+# Also ombine files back into one string so that I can turn this into a df
+interestingResults$files <- lapply(interestingResults$files, function(f) { 
+  f[!grepl("rat", f)]
+  return(paste(f, sep="", collapse="; ") )
+})
+
+# Convert to df for easier manipulation
+unlistedResults <- lapply(interestingResults, function(col) { unlist(col) })
+resultsDf <- do.call(cbind.data.frame, unlistedResults)
+```
 
 
+### Evaluating GSEs
+
+## Clean-Up
 
 ```{r}
 DBI::dbDisconnect(con)
@@ -48,6 +194,5 @@ DBI::dbDisconnect(con)
 
 ## References
 
-Ruth Isserlin's Lecture 3
-slides ("Finding Expression Data") (Isserlin, 2022)
+Ruth Isserlin's Lecture 3 slides ("Finding Expression Data") (Isserlin, 2022)
 
