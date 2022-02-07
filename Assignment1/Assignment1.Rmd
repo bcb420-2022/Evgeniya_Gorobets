@@ -37,9 +37,14 @@ if (!file.exists(sqlFilePath)) {
   options(timeout=600)
   GEOmetadb::getSQLiteFile(destdir="data")
 }
-con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath)
+con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath, synchronous=NULL)
 ```
 
+
+
+```{r}
+DBI::dbDisconnect(con)
+```
 
 ## References
 
