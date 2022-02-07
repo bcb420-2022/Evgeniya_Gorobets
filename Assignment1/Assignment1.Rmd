@@ -7,18 +7,42 @@ output:
     df_print: paged
 ---
 
-TO DO: Add a header (use the format from BCB410)
+## GEOmetadb Setup
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+### Installing GEOmetadb
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
-
+The following code is based off slide 7 in Professor Ruth Isserlin's Lecture 3
+slides ("Finding Expression Data") (Isserlin, 2022). This is just to ensure that
+`GEOmetadb`is installed and available whenever I want to run this notebook.
 ```{r}
-plot(cars)
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+if (!requireNamespace("GEOmetadb", quietly = TRUE)) {
+    BiocManager::install("GEOmetadb")
+}
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+### Connecting to the Database
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+TODO: add references to this code
+```{r}
+# Change the working directory if needed
+if (getwd() == "/home/rstudio") {
+  setwd("./projects/Assignment1")
+}
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+sqlFilePath <- "data/GEOmetadb.sqlite"
+if (!file.exists(sqlFilePath)) {
+  options(timeout=600)
+  GEOmetadb::getSQLiteFile(destdir="data")
+}
+con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath)
+```
+
+
+## References
+
+Ruth Isserlin's Lecture 3
+slides ("Finding Expression Data") (Isserlin, 2022)
+
