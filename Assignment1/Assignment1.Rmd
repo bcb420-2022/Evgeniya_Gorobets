@@ -50,15 +50,19 @@ con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath, synchronous=NULL)
 
 ## Exploring GEO Datasets
 
+TODO: this shouldn't be run/submitted? But I don't want to delete it. Ask ruth what to do 
+
 ### Fetching Recent Human RNASeq Experiment
 
 Get all GSEs that were submitted in the last 5 years (2017-2022) whose 
 organism is "Homo sapiens" and whose technology is "high-throughput sequencing".
 The code is based on slide 39 of Professor Isserlin's Lecture 3 slides 
-(Isserlin, 2022), but modified to have aliases and a more recent date clause.
+(Isserlin, 2022), but modified to have aliases, include more fields, and use a 
+more recent date clause.
 
 ```{r}
-sqlQuery <- paste("SELECT DISTINCT gse.title AS gseTitle, gse.gse,",
+sqlQuery <- paste("SELECT DISTINCT gse.gse, gse.title AS gseTitle,",
+                  "gse.summary, gse.pubmed_id,",
                   "gpl.title as gplTitle, gse.submission_date AS date,",
                   "gse.supplementary_file AS files",
                   "FROM gse JOIN gse_gpl on gse_gpl.gse=gse.gse",
@@ -67,7 +71,7 @@ sqlQuery <- paste("SELECT DISTINCT gse.title AS gseTitle, gse.gse,",
                   "AND gpl.organism LIKE '%Homo sapiens%'",
                   "AND gse.submission_date > '2017-01-01'",
                   "ORDER BY gse.submission_date DESC")
-results <- DBI::dbGetQuery(con, sqlQuery)
+results <- DBI::dbGetQuery(con, sqlQuery)   # 20,316 results
 ```
 <br/>
 
@@ -89,102 +93,213 @@ results$files <- lapply(results$files, function(f) {
 
 # Remove results with no files again
 hasFiles <- unlist(lapply(results$files, function(f) { return(length(f) > 0)}))
-results <- lapply(results, function(col) { return(col[hasFiles]) })
+results <- lapply(results, function(col) { return(col[hasFiles]) })  # 2048 results
 ```
 <br/>
 
 ### Exploring Human RNASeq Datasets
 
-I just want to skim through the title to find some interesting-sounding studies.
-I have some knowledge of the genetic factors involved in breast cancer so 
-focusing on a breast cancer study might be easiest for me.
+To make sure that the dataset focuses on bulk sequencing, I want to get GSEs 
+whose summaries have the word "bulk" in them.
 
 ```{r}
-results$gseTitle[1:25]
-results$gseTitle[26:50]
-results$gseTitle[51:75]
-results$gseTitle[76:100]
-tail(results$gseTitle, n=25)
+bulkSeqGSEs <- grepl("bulk", results$summary, ignore.case=TRUE)
+results <- lapply(results, function(col) { 
+  return(col[bulkSeqGSEs]) 
+})  # 56 results
+```
+
+I want to manually check the titles of these GSEs, since some may mention 
+bulk-sequencing in their summary but the actual study will be based on 
+single-cell sequencing. Additionally, I want to choose datasets that sound 
+interesting and that mention clear biological conditions that were tested.
+
+```{r}
+# commented out for now so that the notebook isn't cluttered
+# uncomment if you want to see all the results again
+# results$gseTitle
+interestingTitles <- c(2, 5, 10, 12, 21, 25, 36, 39, 43, 53)  # 10 datasets
+results <- lapply(results, function(col) { return(col[interestingTitles]) })
+results$gseTitle
 ```
 <br/>
 
-The titles that stood out to me were:
-* "Loss of the Tumor Suppressor FLCN Promotes Breast Tumor Growth by Inducing a 
-TFE3-Dependent Program Driving Warburg Effect and Angiogenesis"
-* "RNA-seq of B cells treated with recombinant CD52-Fc"
-* "Parental (F0) compared to MSC educated (F2) prostate cancer cell lines"
-* "Multiomic analysis identifies CPT1A as a potential therapeutic target in 
-platinum-refractory high grade serous ovarian cancer"
-* "MiR-129-5p downregulates HuD expression impairing neuritogenesis in 
-Amyotrophic Lateral Sclerosis" 
-* "RNA-seq analysis of the effects of BCL6-inhibiting and BCL6-degrading 
-compounds in lymphoma cell lines"
-* "Endothelial transcriptome in response to pharmacological methyltransferase 
-inhibition" 
-
-<br/>
-
-I realized after reading through these titles that some of these may be for 
-single-cell RNASeq, so I pulled up titles that explicitly mention bulk RNASeq.
+Next, I am going to read the summaries of each of these datasets, to make 
+sure they all sound relevant and interesting.  2 too short; 5 is unclear; 8 is short, explore more;
 
 ```{r}
-results$gseTitle[grep("bulk", results$gseTitle)]
+# commented out for now so that the notebook isn't cluttered
+# uncomment if you want to see all the results again
+# results$summary
 ```
 
-Of these, "Human basal cell diversity in normal and IPF lung (bulk RNAseq)", 
-"Silencing Trisomy 21 with XIST in Neural Stem Cells Promotes Neuronal 
-Differentiation (bulk)", and "Single-cell transcriptomic analysis of tissue 
-resident memory T cells in human lung cancer [ bulk RNA-seq]" look interesting.
+The descriptions to GSEs 1, 3, and 6 all sounded interesting and clear. GSEs
+7 and 9 were overwhelming (multiple T cell subpopulations) so I won't consider
+those for now. GSE 10 mentions bulk sequencing but is not a bulk-seq experiment.
+GSE 4 was more about developing an environment for drug screens rather than 
+testing different types of human tissues/cells, so that one did not seem 
+suitable for this assignment.
+
+The summaries for GSEs 2, 5, and 8 were very short and not very clear, so I 
+will go to their website and skim through the related publication to see if 
+they are good potential candidates.
+
+```{r}
+results$gse[c(2, 5, 8)]
+```
+* GSE160085: https://pubmed.ncbi.nlm.nih.gov/33446563/
+* GSE147893: https://pubmed.ncbi.nlm.nih.gov/33020268/
+* GSE129943: https://pubmed.ncbi.nlm.nih.gov/31348885/
+
+After reading the abstracts for each of these, I've decided to also include 
+GSE129943 (GSE 8) into my list of interesting GSEs. This one was published in 
+_Cell_, which is a pretty prestigious journal. The abstract was well written, 
+the article was published in 2019, so it is fairly recent, and it has already 
+been cited by 25 other articles. The other two GSEs focused more on 
+computational methods rather than biological conditions, so I am excluding them 
+from consideration.
+
+```{r}
+interestingGSEs <- c(1, 3, 6, 8)
+gses <- lapply(results, function(col) { return(col[interestingGSEs]) })
+```
 
 <br/>
 
-I decided to extract the GSEs that were interesting to me into a separate list 
-so that I can explore them further.
+As a final sanity check, I want to examine the supplemental files for each of 
+these.
 
 ```{r}
-interestingTitles <- c(
-  paste("Loss of the Tumor Suppressor FLCN Promotes Breast Tumor Growth by",
-        "Inducing a TFE3-Dependent Program Driving Warburg Effect",
-        "and Angiogenesis"), 
-  "RNA-seq of B cells treated with recombinant CD52-Fc", 
-  "Parental (F0) compared to MSC educated (F2) prostate cancer cell lines", 
-  paste("Multiomic analysis identifies CPT1A as a potential therapeutic target",
-        "in platinum-refractory high grade serous ovarian cancer"), 
-  paste("MiR-129-5p downregulates HuD expression impairing neuritogenesis in",
-        "Amyotrophic Lateral Sclerosis"), 
-  paste("RNA-seq analysis of the effects of BCL6-inhibiting and BCL6-degrading",
-        "compounds in lymphoma cell lines"), 
-  paste("Endothelial transcriptome in response to pharmacological",
-        "methyltransferase inhibition"), 
-  "Human basal cell diversity in normal and IPF lung (bulk RNAseq)", 
-  paste("Silencing Trisomy 21 with XIST in Neural Stem Cells Promotes Neuronal",
-        "Differentiation (bulk)"), 
-  paste("Single-cell transcriptomic analysis of tissue resident memory T cells",
-        "in human lung cancer [ bulk RNA-seq]"))
-
-interestingGSEs <- which(results$gseTitle %in% interestingTitles)
-interestingResults <- lapply(results, function(col) { col[interestingGSEs] })
-rm(results) # free up some memory
-
-# How many supplemental files do each of these have?
-unlist(lapply(interestingResults$files, function(f) { length(f)}))
 # Double check the supplemental files to make sure they have counts
-interestingResults$files
+gses$files
 
-# One of the supplemental files is for a rat; remove it
-# Also ombine files back into one string so that I can turn this into a df
-interestingResults$files <- lapply(interestingResults$files, function(f) { 
-  f[!grepl("rat", f)]
-  return(paste(f, sep="", collapse="; ") )
-})
+# Since there is only one file for each, unlist them.
+gses$files <- unlist(gses$files)
+```
+<br/>
 
-# Convert to df for easier manipulation
-unlistedResults <- lapply(interestingResults, function(col) { unlist(col) })
-resultsDf <- do.call(cbind.data.frame, unlistedResults)
+Each of these GSEs only have on supplemental file, which makes my life easier. 
+For simplicity, I will convert `gses` into a data frame before I start 
+assessing them.
+
+```{r}
+gses <- do.call(cbind.data.frame, gses)
 ```
 
+<br/>
 
 ### Evaluating GSEs
+
+The assignment states that the expression dataset should:
+1. Be based on human cells/tissue
+2. Have good coverage (expression for a large subsest of genes)
+3. Have interesting experimental conditions (reflect some biological property 
+or physiological response)
+4. Have biological replicates 
+5. Be less than ten years old
+6. Be mappable to unique human gene identifiers
+
+Conditions 1, 3, and 5 should already be met based on the query parameters and 
+my own judgement of the GSE titles.
+
+```{r}
+# Check that all experiments are less than 10 years old
+(Sys.Date() - as.Date(gses$date)) < 10 * 365       # all TRUE
+
+# Check that all experiments are on humans
+grepl("(Homo sapiens)", gses$gplTitle)             # all TRUE
+
+```
+<br/>
+
+Next, I will check whether any other students have already claimed some of 
+these datasets. This check was conducted on February 8th at 12:35AM.
+
+```{r}
+# Other students have already claimed these datasets and they've either been
+# approved or rejected by Prof. Isserlin
+claimed <- c("GSE137755", "GSE166847", "GSE164471", "GSE134782", "GSE66261", 
+             "GSE152641", "GSE152939", "GSE122848")
+
+intersect(claimed, gses$gse)
+```
+This produced an empty sets so none of my potential GSEs have been 
+claimed by other students.
+<br/>
+
+I will now check for conditions 2 (good gene coverage) and 4 (has biological 
+replicates). First, I will download all the files to the `data` directory.
+
+```{r}
+# Fetch all supplemental files
+for (gse in gses$gse) {
+  suppFiles <- GEOquery::getGEOSuppFiles(gse, baseDir="data")
+}
+```
+<br/>
+
+Next, I will load all the files as data frames into a single list.
+
+```{r}
+# Remove all URL and directory elements from file names
+gses$files <- unlist(lapply(strsplit(gses$files, "/"), function(fileParts) {
+  return(tail(fileParts, 1))
+}))
+
+# Iterate through files and load data
+gseData <- list()
+for (i in seq_along(gses$files)) {
+  file <- gses$files[i]
+  gse <- gses$gse[i]
+  path <- paste0("data/", gse, "/", file)
+  
+  if (grepl("csv", file)) {
+    data <- read.csv(path, header=TRUE)
+  } else {
+    data <- read.delim(path, header=TRUE)
+  }
+  
+  gseData[[gse]] <- data
+}
+```
+<br/>
+
+Next, I look at the column names for each GSE to make sure there are enough 
+biological replicates and to see which column contains the gene names.
+
+```{r}
+# Look at the column names for each dataset
+lapply(gseData, function(data) {
+  colnames(data)
+})
+```
+It looks like GSE163123 has six biological replicates per condition, and 
+GSE129943 has three replicates per condition. The column names of the other two 
+datasets are unclear to me without reading their paper.
+
+Now, I want to look at the number of unique genes in each GSE.
+
+```{r}
+# I manually identified the column that contains the gene name in each dataset
+geneCols <- c("X", "Gene", "Ensembl", "Ensembl")
+
+# Number of unique genes in each dataset
+for (i in seq_along(geneCols)) {
+  data <- gseData[[i]]
+  genes <- data[[geneCols[i]]]
+  print(length(unique(genes)))
+}
+
+```
+
+All of them seem to have exceptionally good coverage (56-62K genes, which is 
+suspicious and definitely indicates they have other types of RNA in their data).
+
+<br/>
+
+Based on everything I've read and seen so far, I think GSE163123 and GSE129943 
+are the strongest candidates for my dataset.
+
 
 ## Clean-Up
 
