@@ -1,0 +1,90 @@
+---
+title: "Assignment 1: Dataset Selection and Initial Processing"
+author: Evgeniya Gorobets
+date: "`r format(Sys.time(), '%d %b %Y')`"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Preface
+
+This R Notebook was developed by Evgeniya Gorobets as part of an assessment for 
+2022 BCB420H: Computational Systems Biology, University of Toronto, Toronto, CA.
+Specifically, this notebook was the final submitted product for Assignment 1 
+of the course.
+
+This notebook only includes the download, cleaning, and processing of my 
+selected GEO dataset. To view the code used to explore GEO, evaluate various 
+GSEs, and ultimately select this dataset, see the R Notebook located at 
+https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/ExploringGEO.Rmd.
+
+## Setup
+
+The code below was taken from the R Notebook I did as a pre-requisite to this 
+notebook, titled "Choosing a GEO Dataset". You can view the original code 
+[here](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/ExploringGEO.Rmd).
+
+```{r}
+# Install BiocManage and GEOquery if required
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+if (!requireNamespace("GEOquery", quietly = TRUE)) {
+    BiocManager::install("GEOquery")
+}
+
+# Change working directory, if needed
+if (getwd() == "/home/rstudio") {
+  setwd("./projects/Assignment1")
+}
+
+# Set constants
+GSE <- 'GSE129943'
+DATA_DIR <- 'data'
+```
+
+
+## Downloading the Data
+
+Add some commentary here
+
+```{r}
+gseDir <- paste0(DATA_DIR, "/", GSE)
+
+# Download the supplemental files for GSE129943 if they're not yet in data dir
+if (!file.exists(gseDir)) {
+  dataFiles <- GEOquery::getGEOSuppFiles(GSE, baseDir=DATA_DIR)
+  filePath <- rownames(dataFiles)
+} else {
+  filePath <- paste0(gseDir, "/", list.files(path=gseDir))
+}
+
+# Load supplemental files as a data frame
+gseCounts <- read.delim(filePath, header=TRUE)
+```
+
+## Cleaning the Data
+
+
+## Normalizing the Data
+
+
+
+## Mapping Gene Identifiers
+
+
+## Clean-Up
+
+```{r}
+# Clear workspace
+rm(list = ls())
+```
+
+## References
+
+Isserlin, R. (2022). Lecture 3 - Finding Expression Data. Quercus.
+https://q.utoronto.ca/courses/248455/files/18120910?module_item_id=3210846
+
+My original R notebook
+
