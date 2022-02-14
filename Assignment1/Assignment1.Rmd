@@ -33,6 +33,10 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 if (!requireNamespace("GEOquery", quietly = TRUE)) {
     BiocManager::install("GEOquery")
 }
+if (!requireNamespace("edgeR", quietly = TRUE)) {
+    BiocManager::install("edgeR")
+}
+
 
 # Change working directory, if needed
 if (getwd() == "/home/rstudio") {
@@ -44,6 +48,7 @@ GSE <- 'GSE129943'
 DATA_DIR <- 'data'
 ```
 
+<br/>
 
 ## Downloading the Data
 
@@ -61,15 +66,69 @@ if (!file.exists(gseDir)) {
 }
 
 # Load supplemental files as a data frame
-gseCounts <- read.delim(filePath, header=TRUE)
+gseData <- read.delim(filePath, header=TRUE, check.names=FALSE)
 ```
+
+<br/>
 
 ## Cleaning the Data
 
+According to the `edgeR` protocol, the first step in cleaning the data is to 
+remove weakly expressed genes. Specifically, we should filter out any genes 
+that have less than one read per million (CPM) in n or more of the samples 
+(where n is the size of the smallest group or replicates). Each group of 
+replicates in our dataset has 3 samples, so we set n=3.
+
+```{r}
+# A helper that will return only the columns in gseData that have count data, 
+# removing any columns with gene names and symbols
+getGSECounts <- function() {
+  gseCounts <- gseData[, 3:8]
+  rownames(gseCounts) <- gseData$Ensembl
+  return(gseCounts)
+}
+
+nGenes <- length(unique(gseData$Ensembl))
+print(paste("Number of genes pre-filtering:", nGenes))  # 57,905
+
+# Use edgeR to compute CPMs
+cpms <- edgeR::cpm(getGSECounts())
+# Only keep genes with CPM > 1 in at least 3 of the samples
+n <- 3
+selectedGenes <- rowSums(cpms > 1) >= n
+gseData <- gseData[selectedGenes, ]
+
+nGenes <- length(unique(gseData$Ensembl))
+print(paste("Number of genes post-filtering:", nGenes))  # 14,241
+```
+
+The second step of cleaning the data is to check for any duplicate genes.
+
+```{r}
+duplicateGenes <- table(gseData$Ensembl) > 1
+length(gseData$Ensembl[duplicateGenes])
+```
+Since there are no duplicate genes, then this section of our data cleaning is 
+done.
+<br/>
 
 ## Normalizing the Data
 
+Before we begin normalizing our data, we will first visualize the distribution 
+of the data using a histogram and a boxplot
 
+TODO: figure out how to do this
+
+Which case is this of the four ? 
+Which assumptions are we making ?
+Based on these assumptions, we will use the TMM normalization method.
+
+```{r}
+
+```
+
+
+Need to map distribution again
 
 ## Mapping Gene Identifiers
 
