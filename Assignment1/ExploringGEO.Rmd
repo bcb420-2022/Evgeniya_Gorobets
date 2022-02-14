@@ -1,5 +1,5 @@
 ---
-title: "Assignment 1"
+title: "Choosing a GEO Dataset"
 author: Evgeniya Gorobets
 date: "`r format(Sys.time(), '%d %b %Y')`"
 output:
@@ -49,8 +49,6 @@ con <- DBI::dbConnect(RSQLite::SQLite(), sqlFilePath, synchronous=NULL)
 <br/>
 
 ## Exploring GEO Datasets
-
-TODO: this shouldn't be run/submitted? But I don't want to delete it. Ask ruth what to do 
 
 ### Fetching Recent Human RNASeq Experiment
 
@@ -125,7 +123,7 @@ results$gseTitle
 <br/>
 
 Next, I am going to read the summaries of each of these datasets, to make 
-sure they all sound relevant and interesting.  2 too short; 5 is unclear; 8 is short, explore more;
+sure they all sound relevant and interesting.
 
 ```{r}
 # commented out for now so that the notebook isn't cluttered
@@ -191,6 +189,7 @@ gses <- do.call(cbind.data.frame, gses)
 ### Evaluating GSEs
 
 The assignment states that the expression dataset should:
+
 1. Be based on human cells/tissue
 2. Have good coverage (expression for a large subsest of genes)
 3. Have interesting experimental conditions (reflect some biological property 
@@ -225,6 +224,7 @@ intersect(claimed, gses$gse)
 ```
 This produced an empty sets so none of my potential GSEs have been 
 claimed by other students.
+
 <br/>
 
 I will now check for conditions 2 (good gene coverage) and 4 (has biological 
@@ -233,10 +233,9 @@ replicates). First, I will download all the files to the `data` directory.
 ```{r}
 # Fetch all supplemental files
 for (gse in gses$gse) {
-  suppFiles <- GEOquery::getGEOSuppFiles(gse, baseDir="data")
+  GEOquery::getGEOSuppFiles(gse, baseDir="data")
 }
 ```
-<br/>
 
 Next, I will load all the files as data frames into a single list.
 
@@ -277,6 +276,8 @@ It looks like GSE163123 has six biological replicates per condition, and
 GSE129943 has three replicates per condition. The column names of the other two 
 datasets are unclear to me without reading their paper.
 
+<br/>
+
 Now, I want to look at the number of unique genes in each GSE.
 
 ```{r}
@@ -298,16 +299,53 @@ suspicious and definitely indicates they have other types of RNA in their data).
 <br/>
 
 Based on everything I've read and seen so far, I think GSE163123 and GSE129943 
-are the strongest candidates for my dataset.
+are the strongest candidates for my dataset. I have chosen to study GSE129943 
+for the rest of the course because its publication was more closely related to 
+the dataset and thus gave me more insight. (The publication that produced 
+GSE163123 primarily focused on single-cell RNASeq data.)
+
+Here is a summary of GSE129943:
+```{r}
+
+gse129943 <- gses[gses$gse == 'GSE129943',]
+cat(paste("GSE:", gse129943$gse),
+    paste("Title:", gse129943$gseTitle),
+    paste("Summary:", gse129943$summary),
+    "Number of Genes: 57905",
+    "Number of Replicates: 3",
+    paste("GPL:", gse129943$gplTitle),
+    paste("Publication Date:", gse129943$date),
+    paste("GEO Link:", 
+          "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE129943"), 
+    paste("Publication Link:", "https://pubmed.ncbi.nlm.nih.gov/31348885/"), 
+    sep="\n")
+
+```
 
 
 ## Clean-Up
 
 ```{r}
+# Disconnect from database
 DBI::dbDisconnect(con)
+
+# Remove all the data files you downloaded
+for (i in seq_along(gses$files)) {
+  file <- gses$files[i]
+  gse <- gses$gse[i]
+  path <- paste0("data/", gse, "/", file)
+  
+  if (file.exists(path)) {
+    file.remove(path)
+  }
+}
+
+# Clear workspace
+rm(list = ls())
 ```
 
 ## References
 
-Ruth Isserlin's Lecture 3 slides ("Finding Expression Data") (Isserlin, 2022)
+Isserlin, R. (2022). Lecture 3 - Finding Expression Data. Quercus.
+https://q.utoronto.ca/courses/248455/files/18120910?module_item_id=3210846
 
