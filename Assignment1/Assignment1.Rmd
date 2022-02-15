@@ -67,6 +67,9 @@ if (!file.exists(gseDir)) {
 
 # Load supplemental files as a data frame
 gseData <- read.delim(filePath, header=TRUE, check.names=FALSE)
+# The columns that contain count data (useful for downstream analysis)
+countsCols <- c("N1H1_Pool_1", "N1H1_Pool_2", "N1H1_Pool_3", 
+                "P1A8_Pool_1", "P1A8_Pool_2", "P1A8_Pool_3")
 ```
 
 <br/>
@@ -80,19 +83,13 @@ that have less than one read per million (CPM) in n or more of the samples
 replicates in our dataset has 3 samples, so we set n=3.
 
 ```{r}
-# A helper that will return only the columns in gseData that have count data, 
-# removing any columns with gene names and symbols
-getGSECounts <- function() {
-  gseCounts <- gseData[, 3:8]
-  rownames(gseCounts) <- gseData$Ensembl
-  return(gseCounts)
-}
-
 nGenes <- length(unique(gseData$Ensembl))
 print(paste("Number of genes pre-filtering:", nGenes))  # 57,905
 
 # Use edgeR to compute CPMs
-cpms <- edgeR::cpm(getGSECounts())
+cpms <- edgeR::cpm(gseData[, countsCols])
+rownames(cpms) <- gseData$Ensembl
+
 # Only keep genes with CPM > 1 in at least 3 of the samples
 n <- 3
 selectedGenes <- rowSums(cpms > 1) >= n
@@ -101,6 +98,12 @@ gseData <- gseData[selectedGenes, ]
 nGenes <- length(unique(gseData$Ensembl))
 print(paste("Number of genes post-filtering:", nGenes))  # 14,241
 ```
+Since we have removed some genes, the our library size has changed. Therefore, 
+we need to recompute the CPMs in our dataset.
+```{r}
+cpms <- edgeR::cpm(gseData[, countsCols])
+```
+
 
 The second step of cleaning the data is to check for any duplicate genes.
 
@@ -115,9 +118,35 @@ done.
 ## Normalizing the Data
 
 Before we begin normalizing our data, we will first visualize the distribution 
-of the data using a histogram and a boxplot
+of the data using a histogram and a boxplot.
 
-TODO: figure out how to do this
+```{r}
+# Get the log2 of the CPMS
+logCPMs <- log2(cpms)
+
+# Draw a boxplot representing the quartiles and outliers for each sample
+boxplot(logCPMs, xlab="Samples", ylab="log2(CPM)", cex.axis = 0.75,
+        main=paste("Log2 CPMs of Bulk RNASeq Samples from", GSE))
+
+# Compute median log2(CPM) across all genes in all samples and plot it
+mediansPerSample <- apply(logCPMs, 2, median)
+gseMedian <- median(mediansPerSample)
+abline(h=gseMedian, col="blue")
+
+```
+<!-- reread assignment requirements and consider removing this paragraph -->
+When creating the boxplots, I noticed some warning about outliers (-Inf) in 
+some of the boxplots not being drawn. This indicates that some genes still have 
+CPM=0 in some samples. However, this is simply means that some genes have CPM=0
+in some samples but CPM>=1 in at least 3 of the samples, indicating possible 
+differential expression.
+
+Next, we will plot the densities of the log2(CPM) for each sample.
+
+```{r}
+# slide 44
+```
+
 
 Which case is this of the four ? 
 Which assumptions are we making ?
