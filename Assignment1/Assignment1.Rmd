@@ -26,7 +26,10 @@ notebook, titled "Choosing a GEO Dataset". You can view the original code
 [here](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/ExploringGEO.Rmd).
 
 ```{r}
-# Install BiocManage and GEOquery if required
+# Install required packages
+if (!requireNamespace("colorRamps", quietly = TRUE)) {
+  install.packages("colorRamps")
+}
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
 }
@@ -98,6 +101,7 @@ gseData <- gseData[selectedGenes, ]
 nGenes <- length(unique(gseData$Ensembl))
 print(paste("Number of genes post-filtering:", nGenes))  # 14,241
 ```
+
 Since we have removed some genes, the our library size has changed. Therefore, 
 we need to recompute the CPMs in our dataset.
 ```{r}
@@ -121,19 +125,29 @@ Before we begin normalizing our data, we will first visualize the distribution
 of the data using a histogram and a boxplot.
 
 ```{r}
-# Get the log2 of the CPMS
-logCPMs <- log2(cpms)
+# Helper function for computing the log2(cpm) of gene counts
+getLogCpms <- function(counts) {
+  cpms <- edgeR::cpm(counts)
+  return(log2(cpms))
+}
 
-# Draw a boxplot representing the quartiles and outliers for each sample
-boxplot(logCPMs, xlab="Samples", ylab="log2(CPM)", cex.axis = 0.75,
-        main=paste("Log2 CPMs of Bulk RNASeq Samples from", GSE))
+# Helper function to draw boxplot (we will need this again after normalization)
+drawBoxplot <- function(logCPMs) {
+  # Draw a boxplot representing the quartiles and outliers for each sample
+  boxplot(logCPMs, xlab="Samples", ylab="log2(CPM)", cex.axis = 0.75,
+          main=paste("Log2 CPMs of Bulk RNASeq Samples from", GSE))
 
-# Compute median log2(CPM) across all genes in all samples and plot it
-mediansPerSample <- apply(logCPMs, 2, median)
-gseMedian <- median(mediansPerSample)
-abline(h=gseMedian, col="blue")
+  # Compute median log2(CPM) across all genes in all samples and plot it
+  mediansPerSample <- apply(logCPMs, 2, median)
+  cpmMedian <- median(mediansPerSample)
+  abline(h=cpmMedian, col="blue")
+}
 
+# Draw a boxplot of the cleaned counts for our dataset
+logCpms <- getLogCpms(gseData[, countsCols])
+drawBoxplot(logCpms)
 ```
+
 <!-- reread assignment requirements and consider removing this paragraph -->
 When creating the boxplots, I noticed some warning about outliers (-Inf) in 
 some of the boxplots not being drawn. This indicates that some genes still have 
@@ -144,23 +158,185 @@ differential expression.
 Next, we will plot the densities of the log2(CPM) for each sample.
 
 ```{r}
-# slide 44
+# Helper function to draw the distribution of each sample 
+# (we will need this again after normalization)
+drawDensities <- function(logCPMs, title) {
+  # Get the density distribution of each sample
+  densityPerSample <- apply(logCPMs, 2, density)
+  print(densityPerSample)
+  
+  # Helper to get density stats across all samples
+  getDensityStat <- function(samples, stat, axis) {
+    statPerSample <- lapply(samples, function(sample) { stat(sample[[axis]]) })
+    return(stat(unlist(statPerSample)))
+  }
+  
+  # Get x and y limits across all density plots
+  minX <- getDensityStat(densityPerSample, min, 'x')
+  minY <- getDensityStat(densityPerSample, min, 'y')
+  maxX <- getDensityStat(densityPerSample, max, 'x')
+  maxY <- getDensityStat(densityPerSample, max, 'y')
+  
+  numSamples <- ncol(logCPMs)
+  lineColors <- colorRamps::primary.colors(numSamples)
+  
+  # Initialize an empty plot
+  plot(c(), xlim=c(minX, maxX), ylim=c(minY, maxY), type="n",
+       xlab="Log2(CPM)", ylab="Smoothing Density", main=title)
+  
+  # Draw each density line on the plot
+  for (i in seq_along(densityPerSample)) {
+    lines(densityPerSample[[i]], col=lineColors[i], lty=1)
+  }
+  
+  # Create a legend
+  legend("topleft", legend=colnames(logCPMs), col=lineColors, 
+         lty=rep(1, numSamples))
+}
+
+title <- paste("Density Distribution of Each Sample in", GSE)
+drawDensities(logCpms, title)
 ```
 
+We note that none of our samples have a clear normal distribution. All of 
+them have a "hump" in their left tail. Ideally, we would want normalization to 
+remove that hump.
 
-Which case is this of the four ? 
-Which assumptions are we making ?
-Based on these assumptions, we will use the TMM normalization method.
+Before choosing a normalization method, we consider the assumptions we can make 
+about our data. There are two primary questions about the data that affect 
+the normalization method we choose (Evans, Hardin, & Stoebel, 2018):
+
+1. Do the two biological conditions (normal kidney cells vs. kidney cells from 
+MKD patients) have the same total mRNA/cell?
+2. Is the number of differentially expressed genes in the two biological 
+conditions roughly the same? (Is the differential expression symmetric?)
+
+MKD is a proteinopathy caused by a frameshift mutation in the MUC1 gene, often 
+due to the insertion of an extra cytosine. The length of the MUC1 gene is thus 
+roughly the same in all samples. The promoter for wild-type MUC1 and fs-MUC1 is 
+the same, so we expect the quantity of MUC1 mRNA to be roughly the same in all 
+samples as well. However, the study that produced this dataset noted that in 
+MKD cells, there was increased activation of unfolded protein response (UPR), 
+and in particular, of the ATF5 branch of UPR (relative to normal kidney cells). 
+The authors of the study confirmed this observation not only through RNASeq 
+results but also through Immunoblot and RT-PCR analysis of downstream effectors 
+of the three UPR branches. Therefore, it is reasonable to expect that the MKD 
+samples in this dataset will have more UPR-related transcripts than the normal 
+kidney samples. There was no evidence or mention in the study that the 
+upregulation of UPR-related genes in MKD cells was paired with the 
+downregulation of other genes. This suggests that the total mRNA/cell may be 
+greater in MKD cells compared to normal human kidney cells. Therefore, 
+normalization techniques that normalize by library size (such as total count 
+normalization, RPKM, FPKM, etc.) are unsuitable for the dataset, since these 
+methods rely on the assumption that the total mRNA/cell stays the same across 
+all samples (Evans, Hardin, & Stoebel, 2018).
+
+We will also eliminate "normalization by controls" as a normalization strategy. 
+Since it is unclear which housekeeping genes would be unaffected by MKD and 
+since no spike-ins were used in this sequencing experiment, then there are no 
+control genes that can be used to normalize the sample.
+
+This leaves us with normalization by distribution (quantile normalization, TMM, 
+MRN, DESeq normalization, etc.) or normalization by testing (PoissonSeq, DEGES, 
+etc.). All normalization methods that fall into this category try to estimate 
+which genes are non-DE and use that to compute the total mRNA/cell in each 
+sample (Evans, Hardin, & Stoebel, 2018). In order to identify the non-DE genes, 
+these methods assume that the samples have mostly symmetrical differential 
+expression. I am particularly interested in TMM, because it has been reported 
+to have good results on real and simulated datasets. 
+
+Based on the observations we have already made about the 
+upregulation of UPR in MKD cells, we know that differential expression is not 
+completely symmetrical between our two conditions. However, since UPR 
+activation only involves a few genes, it is likely that our dataset's asymmetry 
+is within the the allowable threshold for TMM to work. 
+The study that produced this dataset made no suggestion that there might be a 
+global shift in expression between normal cells and MKD cells; therefore, I 
+will assume that the differential expression of this dataset is symmetrical 
+enough such that TMM can still normalize counts for the total mRNA/cell in 
+samples.
 
 ```{r}
+# Convert counts columns in GSE to a matrix
+countsMatrix <- as.matrix(gseData[, countsCols])
+rownames(countsMatrix) <- gseData$Ensembl
 
+# Get the cell type of each sample
+cellTypeList <- lapply(strsplit(colnames(countsMatrix), "_"), 
+                       function(split) {split[1]})
+cellTypes <- unlist(cellTypeList)
+names(cellTypes) <- colnames(countsMatrix)
+
+# TMM Normalization
+dge <- edgeR::DGEList(counts=countsMatrix, group=cellTypes)
+dge <- edgeR::calcNormFactors(dge, method="TMM")  
+# NOTE: the above function only changes the norm.factors column
 ```
 
 
 Need to map distribution again
 
+```{r}
+# Draw a boxplot of the normalized counts
+# NOTE: you can pass a DGEList object to edgeR::cpm and it will factor in the 
+# normalization factors
+logCpmsNorm <- getLogCpms(dge)
+drawBoxplot(logCpmsNorm)
+```
+
+
+```{r}
+title <- paste("Density Distribution of Normalized Samples in", GSE)
+drawDensities(logCpmsNorm, title)
+```
+
+Both the boxplot and the density plots look almost exactly the same for our 
+pre-TMM and post-TMM data. We notice that there is still a hump in the side of 
+each sample. To facilitate comparison of our non-normalized and 
+normalized counts, we will plot the density of each sample pre- and post-TMM 
+on a single plot.
+
+```{r}
+for (i in seq_along(colnames(logCpms))) {
+  sampleName <- colnames(logCpms)[i]
+  densities <- cbind(logCpms[, i], logCpmsNorm[, i])
+  colnames(densities) <- c(paste(sampleName, "pre-TMM"), 
+                           paste(sampleName, "post-TMM"))
+  title <- paste("Density Distribution", sampleName, 
+                "Before and After Normalization")
+  drawDensities(densities, title=title)
+}
+```
+
+Unfortunately, there is still no visible difference between the pre- and post- 
+normalized counts when looking at the density lines each sample. However, if we 
+examine the density statistics printed for each sample, we notice that there 
+are small changes in the mean, median, range, and quartiles for each sample. 
+For instance, the mean log2(CPM) in P1A8_Pool_3 was 1.778 pre-TMM and 1.758 
+post-TMM. Similarly, a quick check of the log2(CPMs) for the first gene before 
+and after TMM reveal that the normalization did have some effect.
+
+```{r}
+geneCounts <- rbind(logCpms[1, ], logCpmsNorm[1, ], 
+                    logCpmsNorm[1, ] - logCpms[1, ])
+rownames(geneCounts) <- c("Pre-TMM", "Post-TMM", "Difference")
+print(geneCounts)
+```
+
+We notice that the difference in log2(CPM) between pre- and post-normalization 
+is non-zero for each sample. Specifically, all the log2(CPMs) in normal kidney 
+samples were increased during TMM while all the log2(CPMs) in MKD samples were 
+decreased. We can thus conclude that our normalization was effective.
+<br/>
+
 ## Mapping Gene Identifiers
 
+
+## Conclusion
+
+finish up report
+
+save cleaned, normalized, mapped data
 
 ## Clean-Up
 
