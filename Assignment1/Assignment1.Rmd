@@ -21,10 +21,6 @@ https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/Exploring
 
 ## Setup
 
-The code below was taken from the R Notebook I did as a pre-requisite to this 
-notebook, titled "Choosing a GEO Dataset". You can view the original code 
-[here](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/ExploringGEO.Rmd).
-
 ```{r}
 # Install required packages
 if (!requireNamespace("colorRamps", quietly = TRUE)) {
@@ -39,7 +35,9 @@ if (!requireNamespace("GEOquery", quietly = TRUE)) {
 if (!requireNamespace("edgeR", quietly = TRUE)) {
     BiocManager::install("edgeR")
 }
-
+if (!requireNamespace("biomaRt", quietly = TRUE)) {
+    BiocManager::install("biomaRt")
+}
 
 # Change working directory, if needed
 if (getwd() == "/home/rstudio") {
@@ -55,7 +53,8 @@ DATA_DIR <- 'data'
 
 ## Downloading the Data
 
-Add some commentary here
+Before beginning the data preparation, I check to make sure the counts data is 
+available, and if not, I download it from GEO.
 
 ```{r}
 gseDir <- paste0(DATA_DIR, "/", GSE)
@@ -86,28 +85,23 @@ that have less than one read per million (CPM) in n or more of the samples
 replicates in our dataset has 3 samples, so we set n=3.
 
 ```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+
 nGenes <- length(unique(gseData$Ensembl))
-print(paste("Number of genes pre-filtering:", nGenes))  # 57,905
+cat(paste("Number of genes pre-filtering:", nGenes))  # 57,905
 
 # Use edgeR to compute CPMs
 cpms <- edgeR::cpm(gseData[, countsCols])
 rownames(cpms) <- gseData$Ensembl
 
 # Only keep genes with CPM > 1 in at least 3 of the samples
-n <- 3
-selectedGenes <- rowSums(cpms > 1) >= n
+selectedGenes <- rowSums(cpms > 1) >= 3
 gseData <- gseData[selectedGenes, ]
 
 nGenes <- length(unique(gseData$Ensembl))
-print(paste("Number of genes post-filtering:", nGenes))  # 14,241
+cat(paste("Number of genes post-filtering:", nGenes))  # 14,241
 ```
-
-Since we have removed some genes, the our library size has changed. Therefore, 
-we need to recompute the CPMs in our dataset.
-```{r}
-cpms <- edgeR::cpm(gseData[, countsCols])
-```
-
 
 The second step of cleaning the data is to check for any duplicate genes.
 
@@ -117,14 +111,18 @@ length(gseData$Ensembl[duplicateGenes])
 ```
 Since there are no duplicate genes, then this section of our data cleaning is 
 done.
+
 <br/>
 
 ## Normalizing the Data
 
 Before we begin normalizing our data, we will first visualize the distribution 
-of the data using a histogram and a boxplot.
+of the raw data using a histogram and a boxplot.
 
 ```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+
 # Helper function for computing the log2(cpm) of gene counts
 getLogCpms <- function(counts) {
   cpms <- edgeR::cpm(counts)
@@ -148,16 +146,17 @@ logCpms <- getLogCpms(gseData[, countsCols])
 drawBoxplot(logCpms)
 ```
 
-<!-- reread assignment requirements and consider removing this paragraph -->
 When creating the boxplots, I noticed some warning about outliers (-Inf) in 
-some of the boxplots not being drawn. This indicates that some genes still have 
-CPM=0 in some samples. However, this is simply means that some genes have CPM=0
-in some samples but CPM>=1 in at least 3 of the samples, indicating possible 
-differential expression.
+some of the boxplots not being drawn. This indicates that some samples still 
+have genes with CPM=0. However, we know that genes with CPM=0 in more than 
+3 samples have been removed, so we can safely ignore these warnings.
 
 Next, we will plot the densities of the log2(CPM) for each sample.
 
 ```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+
 # Helper function to draw the distribution of each sample 
 # (we will need this again after normalization)
 drawDensities <- function(logCPMs, title) {
@@ -199,7 +198,7 @@ drawDensities(logCpms, title)
 ```
 
 We note that none of our samples have a clear normal distribution. All of 
-them have a "hump" in their left tail. Ideally, we would want normalization to 
+them have a "hump" on their left side. Ideally, we would want normalization to 
 remove that hump.
 
 Before choosing a normalization method, we consider the assumptions we can make 
@@ -242,8 +241,9 @@ etc.). All normalization methods that fall into this category try to estimate
 which genes are non-DE and use that to compute the total mRNA/cell in each 
 sample (Evans, Hardin, & Stoebel, 2018). In order to identify the non-DE genes, 
 these methods assume that the samples have mostly symmetrical differential 
-expression. I am particularly interested in TMM, because it has been reported 
-to have good results on real and simulated datasets. 
+expression (Evans, Hardin, & Stoebel, 2018). I am particularly interested in 
+TMM, because it has been reported to have good results on real and simulated 
+datasets. 
 
 Based on the observations we have already made about the 
 upregulation of UPR in MKD cells, we know that differential expression is not 
@@ -257,6 +257,9 @@ enough such that TMM can still normalize counts for the total mRNA/cell in
 samples.
 
 ```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+
 # Convert counts columns in GSE to a matrix
 countsMatrix <- as.matrix(gseData[, countsCols])
 rownames(countsMatrix) <- gseData$Ensembl
@@ -273,8 +276,8 @@ dge <- edgeR::calcNormFactors(dge, method="TMM")
 # NOTE: the above function only changes the norm.factors column
 ```
 
-
-Need to map distribution again
+Now that I have normalized the counts, I want to reexamine the distribution of 
+the data.
 
 ```{r}
 # Draw a boxplot of the normalized counts
@@ -292,26 +295,9 @@ drawDensities(logCpmsNorm, title)
 
 Both the boxplot and the density plots look almost exactly the same for our 
 pre-TMM and post-TMM data. We notice that there is still a hump in the side of 
-each sample. To facilitate comparison of our non-normalized and 
-normalized counts, we will plot the density of each sample pre- and post-TMM 
-on a single plot.
-
-```{r}
-for (i in seq_along(colnames(logCpms))) {
-  sampleName <- colnames(logCpms)[i]
-  densities <- cbind(logCpms[, i], logCpmsNorm[, i])
-  colnames(densities) <- c(paste(sampleName, "pre-TMM"), 
-                           paste(sampleName, "post-TMM"))
-  title <- paste("Density Distribution", sampleName, 
-                "Before and After Normalization")
-  drawDensities(densities, title=title)
-}
-```
-
-Unfortunately, there is still no visible difference between the pre- and post- 
-normalized counts when looking at the density lines each sample. However, if we 
-examine the density statistics printed for each sample, we notice that there 
-are small changes in the mean, median, range, and quartiles for each sample. 
+each sample. However, if we examine the density statistics printed for each 
+sample, we notice that there are small changes in the mean, median, range, and 
+quartiles for each sample. 
 For instance, the mean log2(CPM) in P1A8_Pool_3 was 1.778 pre-TMM and 1.758 
 post-TMM. Similarly, a quick check of the log2(CPMs) for the first gene before 
 and after TMM reveal that the normalization did have some effect.
@@ -329,14 +315,368 @@ samples were increased during TMM while all the log2(CPMs) in MKD samples were
 decreased. We can thus conclude that our normalization was effective.
 <br/>
 
+## Exploring the Data
+
+### Sample Separation - MDS Plot
+
+To better understand our data, I will see how good the sample separation in 
+this dataset is.
+
+```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 5 slides
+# (Isserlin, 2022)
+
+# For readability, shorten the sample names
+sampleNames <- rownames(dge$samples)
+sampleNames <- lapply(strsplit(sampleNames, "_"), function(split) {
+  return(paste0(split[1], ".", split[3]))
+})
+sampleNames <- unlist(sampleNames)
+
+# Create MDS plot
+edgeR::plotMDS.DGEList(dge, labels=sampleNames, 
+                       col=c(rep("blue", 3), rep("red", 3)))
+```
+
+I notice extremely good separation between the two biological conditions, 
+specifically in the first dimension. I notice strong clustering of the MKD 
+samples (red), which is promising. The normal kidney samples are very similar 
+in dimension 1 but have some separation in dimension 2.
+
+### Variance, Dispersion, and BCV
+
+```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+dge <- edgeR::estimateDisp(dge)
+# Plot BCV (dispersion squared), both tagwise and common
+edgeR::plotBCV(dge, col.tagwise="black", col.common="green")
+```
+
+As expected, the highest BCV (variation) is found in genes that have low 
+expression. Beyond that, the BCV plot looks typical.
+
+```{r}
+# Part of this code block were based on Professor Isserlin's Lecture 4 slides
+# (Isserlin, 2022)
+edgeR::plotMeanVar(dge, show.raw.vars=T, show.tagwise.vars=T, NBline=T,
+                   show.ave.raw.vars=T, show.binned.common.disp.vars=T)
+```
+
+The mean-to-variance plot also looks fairly typical, and will be more useful 
+in downstream analysis.
+
+<br/>
+
 ## Mapping Gene Identifiers
+
+The final step in the dataset preparation is to map the gene IDs to HUGO 
+symbols. First, we note that our dataset already came with HGNC symbols.
+
+```{r}
+originalMappings <- gseData[, c("Ensembl", "HGNC")]
+length(which(is.na(originalMappings$HGNC)))
+length(which(originalMappings$HGNC == ""))
+
+```
+
+However, of these gene symbols, 360 are `NA` and 962 are empty strings. To make 
+it easier to identify missing mappings, I will replace all empty strings with 
+`NA`s.
+
+```{r}
+originalMappings$HGNC[originalMappings$HGNC == ""] <- NA
+length(which(is.na(originalMappings$HGNC)))
+```
+
+Because so many gene symbol mappings are missing from my dataset, and because 
+I wish to verify the mappings, I will use `biomaRt` to remap the ENSEMBL IDs to 
+HUGO gene symbols.
+
+```{r}
+mappingsFile <- paste0(DATA_DIR, "/geneMappings.rds")
+tryDiffMarts <- !file.exists(mappingsFile)
+```
+
+
+_NOTE: The following, collapsed portion of the notebook was used to evaluate 
+the best 
+dataset to use for mapping ENSEMBL gene IDs to HGNC symbols. If the mappings 
+file is already available, then any code in this block will not be 
+evaluated in order to save computational time and avoid dealing with 
+possible Ensembl timeouts._
+
+<details>
+<summary> Click to expand </summary>
+
+Since this dataset was published to GEO on April 17, 2019, I will try mapping 
+with both the most recent version of Ensembl and the version that was most 
+recent in April 2019. Unfortunately, the publication associated with this 
+dataset did not specify which Ensembl version they used.
+
+```{r eval = tryDiffMarts, echo = tryDiffMarts}
+ensemblVersions <- biomaRt::listEnsemblArchives()
+
+# Get all the ENSEMBL version published in 2019 or 2018
+ensemblVersions[grepl("(2019)|(2018)", ensemblVersions$date), ]
+```
+
+Ensembl 96 was published in April 2019, so it could not have been used for data 
+analysis. I will try Ensembl 95, which was published in January 2019, and 
+Ensembl 94, which was published in October 2018.
+
+```{r eval = tryDiffMarts, echo = tryDiffMarts}
+humanDataset <- "hsapiens_gene_ensembl"
+
+# Connect to ENSEMBL gene marts, human dataset
+# At the time this was written, version 105 was the most current Ensembl release
+ensembl105 <- biomaRt::useEnsembl("genes", dataset=humanDataset, version=105)
+ensembl95 <- biomaRt::useEnsembl("genes", dataset=humanDataset, version=95)
+ensembl94 <- biomaRt::useEnsembl("genes", dataset=humanDataset, version=94)
+```
+
+Since there are multiple ENSEMBL-related filters, I will first double check 
+the types of ENSEMBL IDs that I have in my dataset
+
+```{r eval = tryDiffMarts, echo = tryDiffMarts}
+# Check that all ENSEMBL IDs are gene IDs (not transcript/peptide IDs)
+all(grepl("^ENSG", gseData$Ensembl))
+
+# Check whether any of the ENSEMBL gene IDs have version numbers
+any(grepl("\\.", gseData$Ensembl))
+```
+
+Since all my ENSEMBL IDs are gene IDs and none of them have version numbers, 
+then I will use the `ensembl_gene_id` filter.
+
+```{r}
+# Helper to compute stats on mappings
+printMappingStats <- function(mapping, mapName, ogMappings) {
+  # Remove any empty strings
+  emptySymbols <- mapping$hgnc_symbol == ""
+  mapping <- mapping[!emptySymbols, ]
+  cat(paste("Removed", sum(emptySymbols), "empty HUGO symbols from", 
+            mapName, "mapping.\n"))
+  
+  # Get number of unique ENSEMBL IDs that were mapped
+  numMappedGenes <- length(unique(mapping$ensembl_gene_id))
+  # Get number of genes that were mapped to more than one symbol
+  numMappedMultiple <- sum(table(mapping$ensembl_gene_id) > 1)
+  
+  # Compare to original mappings
+  joinedMappings <- merge(mapping, ogMappings, by.x='ensembl_gene_id',
+                          by.y='Ensembl',  all.y=T)
+  numUnmappedGenes <- sum(is.na(joinedMappings$hgnc_symbol))
+  
+  # Number of mappings that are different
+  diffSymbols <- joinedMappings$hgnc_symbol != joinedMappings$HGNC
+  nonNullSymbols <- 
+    !is.na(joinedMappings$hgnc_symbol) & !is.na(joinedMappings$HGNC)
+  numDiffSymbols <- sum(diffSymbols & nonNullSymbols)
+  
+  # Print results
+  cat(
+    paste(mapName, "Mapping Stats:"),
+    paste("Number of genes mapped:", numMappedGenes),
+    paste("Number of genes mapped to multiple symbols:", numMappedMultiple),
+    paste("Number of genes not mapped to any symbols:", numUnmappedGenes),
+    paste("Number of genes mapped to different symbols relative to original",
+          "mappings:", numDiffSymbols),
+    "\n",
+    sep="\n")
+}
+```
+
+```{r eval = tryDiffMarts, echo = tryDiffMarts}
+# Helper function to get HGNC symbols for a set of ENSEMBL gene IDs with a 
+# given mart
+mapGeneIds <- function(ensemblIDs, mart) {
+  mappings <- biomaRt::getBM(attributes=c("ensembl_gene_id", "hgnc_symbol"), 
+                             filters=c("ensembl_gene_id"), 
+                             values=ensemblIDs, 
+                             mart=mart)
+  return(mappings)
+}
+
+# Get mappings using each mart
+mappings105 <- mapGeneIds(gseData$Ensembl, ensembl105)
+mappings95 <- mapGeneIds(gseData$Ensembl, ensembl95)
+mappings94 <- mapGeneIds(gseData$Ensembl, ensembl94)
+
+mappings <- list(mappings105, mappings95, mappings94)
+names(mappings) <- c("Ensembl 105", "Ensembl 95", "Ensembl 94")
+
+# Print stats for each mapping
+for (i in seq_along(mappings)) {
+  printMappingStats(mappings[[i]], names(mappings)[i], originalMappings)
+}
+```
+
+Unfortunately, none of the ENSEMBL versions had perfect gene symbol mapping. 
+The version that mapped the most genes was the newest release of ENSEMBL (105)
+(It mapped more than 100 genes more than the second best version), so this is 
+the one I will use for the rest of this course.
+
+```{r eval = tryDiffMarts, echo = tryDiffMarts}
+# Remove remnants of other mapping attempts to avoid confusion
+rm(mappings95, mappings94, ensembl94, ensembl95)
+saveRDS(mappings105, mappingsFile)
+```
+
+</details>
+<br/>
+
+```{r}
+geneIdMappings <- readRDS(mappingsFile)
+# The printMappingStats function is defined in the collapsible section of 
+# this notebook
+printMappingStats(geneIdMappings, "Ensembl 105", originalMappings)
+```
+
+First, I want to investigate the gene that was mapped to more than one symbol.
+
+```{r}
+freq <- table(geneIdMappings$ensembl_gene_id)
+duplicateGene <- names(freq[freq > 1])
+geneIdMappings[geneIdMappings$ensembl_gene_id == duplicateGene, ]
+```
+
+The gene ENSG00000254876 was mapped to both SUGT1P4-STRA6LP and STRA6LP. 
+According to the [HGNC](https://www.genenames.org/data/gene-symbol-report/#!/hgnc_id/HGNC:53830),
+STRA6LP is a pseudogene, while SUGT1P4-STRA6LP is an approved gene in the 
+human genome (Howe et al, 2021). I will thus stick to SUGT1P4-STRA6LP and 
+remove STRA6LP from mymappings table.
+
+```{r}
+geneIdMappings <- geneIdMappings[geneIdMappings$hgnc_symbol != "STRA6LP", ]
+printMappingStats(geneIdMappings, "Ensembl 105", originalMappings)
+```
+
+Now that all genes only map to one symbol, I want to remove any genes that map 
+to empty strings, of which there are 462.
+
+```{r}
+geneIdMappings <- geneIdMappings[geneIdMappings$hgnc_symbol != "", ]
+printMappingStats(geneIdMappings, "Ensembl 105", originalMappings)
+```
+
+I notice that quite a few (1127) of the HGNC symbols I retrieved from Biomart 
+do not align with the HGNC symbols that were in the original dataset. This is 
+likely due to an error in the study or a different Ensembl version.
+This disparity between HUGO identifiers suggests that I should not attempt to 
+fill in the missing symbols in my mapping table with symbols from the original 
+dataset. However, I can use the HGNC symbols from the original dataset to 
+gain insight to my unmapped genes.
+
+```{r}
+# Replace original HGNC mappings with the ones I retrieved
+gseData <- merge(
+  geneIdMappings, gseData, by.x='ensembl_gene_id', by.y='Ensembl', all.y=T)
+colnames(gseData)[colnames(gseData) == "ensembl_gene_id"] <- "Ensembl"
+
+# Identify unmapped genes
+unmappedRows <- is.na(gseData$hgnc_symbol)
+unmappedGenes <- gseData[unmappedRows, c("Ensembl", "HGNC", "hgnc_symbol")]
+
+# What percentage of genes are unmapped?
+100 * nrow(unmappedGenes) / nrow(gseData)
+```
+806 of 14,241 genes are unmapped. This corresponds to 5.66% of all the genes in 
+my dataset. First, I check whether the unmapped genes are ribosomal proteins, 
+which do not affect differential expression analysis.
+
+```{r}
+# How many are ribosomal proteins?
+length(grep("^RP", unmappedGenes$HGNC))
+```
+
+Only 4 of the unmapped genes are ribosomal proteins, so there are 802 other 
+genes that are unmapped. To try and investigate, I will look up the first few 
+unmapped genes in the Ensembl database.
+
+```{r}
+head(unmappedGenes)
+```
+
+For each of the six gene IDs above, an ENSEMBL search revealed that these have 
+been deprecated since ENSEMBL Version 76 (i.e., version 75 was the last to 
+contain these gene identifiers) (Howe et al, 2021). This strongly suggests that 
+the authors of 
+this dataset used Ensembl version 75 or less when creating this dataset. 
+
+However, using such an old version of gene identifiers is ill-advised, as it 
+may cause me to lose out on newer gene annotations, which may impact my 
+downstream analysis (especially in gene set enrichment). Therefore, I will 
+stick to my HGNC symbols (rather than the ones from the original dataset), but 
+I will not remove the unmapped genes. If in later analysis, the unmapped genes 
+are significant (i.e., they turn out to be differentially expressed), then I 
+will explore those genes further and see if they have more modern identifiers 
+in Ensembl that do map to HUGO gene symbols. 
+
+As a result of this decision, the final product of my notebook is not a data 
+frame with only numeric columns and unique HUGO symbols, but a data frame with 
+unique gene identifiers, some of which lack HUGO symbols.
+
+```{r}
+# Remove old HGNC symbols
+gseData <- gseData[, names(gseData) != "HGNC"]
+
+# Save data
+# cnm = cleaned, normalized, mapped
+dataPath <- paste0(DATA_DIR, "/cnmData.rds")
+saveRDS(gseData, dataPath)
+```
+<br/>
 
 
 ## Conclusion
 
-finish up report
+Below is a summary of the key features of my dataset, posed as seven questions.
 
-save cleaned, normalized, mapped data
+1. What are the control and test conditions of the dataset?
+
+The control condition is normal human kidney cells (with the MUC1-wt allele). 
+The test condition are kidney cells from MKD patiens (with the MUC1-fs allele).
+
+2. Why is the dataset of interest to you?
+
+This dataset is of interest to me because it is part of a larger interesting 
+study in which the authors identified a therapy (BRD4780) that may help cure 
+many proteinopathies which previously had no cure. I also have no experience 
+with kidney-related biology, so this dataset is introducing me to genes and 
+pathways that I am curious about.
+
+3. Were there expression values that were not unique for specific genes? 
+How did you handle these?
+
+There were no duplicate Ensembl gene IDs, but there was one gene ID that mapped 
+to two different HUGO symbols. I resolved this by researching the two HUGO 
+symbols and selecting the one that was approved for the human genome (rather 
+than the pseudogene).
+
+4. Were there expression values that could not be mapped to current HUGO symbols?
+
+As addressed in the section on Identifier Mapping, about 5.66% of the genes 
+could not be mapped to current HUGO symbols, most likely because the authors of 
+the dataset used Ensembl version 75 (from Feb 2014). For now, I have left 
+these genes in the data, and I have resolved to investigate them further if they 
+turn out to be differentially expressed.
+
+5. How many outliers were removed?
+
+No outliers seemed significant and therefore none were removed.
+
+6. How did you handle replicates?
+
+Because all the samples came from different patients, no special handling of 
+the replicates was required. I simply made sure to filter out genes that had 
+low expression in more than 3 samples, since the number of replicates was 3 in 
+each condition.
+
+7. What is the final coverage of your dataset?
+
+Because I did not remove any of the unmapped genes, the final coverage of my 
+dataset was 14,241 human genes.
 
 ## Clean-Up
 
@@ -347,8 +687,16 @@ rm(list = ls())
 
 ## References
 
-Isserlin, R. (2022). Lecture 3 - Finding Expression Data. Quercus.
-https://q.utoronto.ca/courses/248455/files/18120910?module_item_id=3210846
+Evans, C., Hardin, J., & Stoebel, D.M. 2018. Selecting between-sample RNA-Seq 
+normalization methods from the perspective of their assumptions. _Briefings in 
+Bioinformatics 19_(5), pgs. 776–792. https://doi.org/10.1093/bib/bbx008
 
-My original R notebook
+Howe, K.L, et al. 2021. Ensembl 2021. _Nucleic Acids Research 49_(D1), pgs. 
+D884–D891. https://doi.org/10.1093/nar/gkaa942
 
+Isserlin, R. (2022). Lecture 5 - Data Exploration and Identifier Mapping. 
+Quercus.
+https://q.utoronto.ca/courses/248455/files/18120883?module_item_id=3463354
+
+Isserlin, R. (2022). Lecture 4 - Data Exploration and Normalization. Quercus.
+https://q.utoronto.ca/courses/248455/files/19273570?module_item_id=3476594
