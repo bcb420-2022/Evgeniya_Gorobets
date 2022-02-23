@@ -312,7 +312,14 @@ print(geneCounts)
 We notice that the difference in log2(CPM) between pre- and post-normalization 
 is non-zero for each sample. Specifically, all the log2(CPMs) in normal kidney 
 samples were increased during TMM while all the log2(CPMs) in MKD samples were 
-decreased. We can thus conclude that our normalization was effective.
+decreased. We can thus conclude that our normalization was effective and save 
+the normalized counts to a variable.
+
+```{r}
+normalizedCounts <- edgeR::cpm(dge)
+normalizedCounts <- as.data.frame(normalizedCounts)
+```
+
 <br/>
 
 ## Exploring the Data
@@ -565,34 +572,29 @@ do not align with the HGNC symbols that were in the original dataset. This is
 likely due to an error in the study or a different Ensembl version.
 This disparity between HUGO identifiers suggests that I should not attempt to 
 fill in the missing symbols in my mapping table with symbols from the original 
-dataset. However, I can use the HGNC symbols from the original dataset to 
-gain insight to my unmapped genes.
+dataset.
 
 ```{r}
-# Replace original HGNC mappings with the ones I retrieved
-gseData <- merge(
-  geneIdMappings, gseData, by.x='ensembl_gene_id', by.y='Ensembl', all.y=T)
-colnames(gseData)[colnames(gseData) == "ensembl_gene_id"] <- "Ensembl"
+# Add my HUGO gene symbol mappings to the normalized counts
+normalizedCounts <- merge(geneIdMappings, normalizedCounts, 
+                          by.x='ensembl_gene_id', by.y='row.names', all.y=T)
+
+# Rename columns for simplicity
+ensemblColumn <- which(colnames(normalizedCounts) == "ensembl_gene_id")
+colnames(normalizedCounts)[ensemblColumn] <- "Ensembl"
+hugoCol <- which(colnames(normalizedCounts) == "hgnc_symbol")
+colnames(normalizedCounts)[hugoCol] <- "HGNC"
 
 # Identify unmapped genes
-unmappedRows <- is.na(gseData$hgnc_symbol)
-unmappedGenes <- gseData[unmappedRows, c("Ensembl", "HGNC", "hgnc_symbol")]
+unmappedGenes <- gseData[is.na(normalizedCounts$HGNC), c("Ensembl", "HGNC")]
+nrow(unmappedGenes)
 
 # What percentage of genes are unmapped?
-100 * nrow(unmappedGenes) / nrow(gseData)
+100 * nrow(unmappedGenes) / nrow(normalizedCounts)
 ```
 806 of 14,241 genes are unmapped. This corresponds to 5.66% of all the genes in 
-my dataset. First, I check whether the unmapped genes are ribosomal proteins, 
-which do not affect differential expression analysis.
-
-```{r}
-# How many are ribosomal proteins?
-length(grep("^RP", unmappedGenes$HGNC))
-```
-
-Only 4 of the unmapped genes are ribosomal proteins, so there are 802 other 
-genes that are unmapped. To try and investigate, I will look up the first few 
-unmapped genes in the Ensembl database.
+my dataset. To try and investigate, 
+I will look up the first few unmapped genes in the Ensembl database.
 
 ```{r}
 head(unmappedGenes)
@@ -618,13 +620,9 @@ frame with only numeric columns and unique HUGO symbols, but a data frame with
 unique gene identifiers, some of which lack HUGO symbols.
 
 ```{r}
-# Remove old HGNC symbols
-gseData <- gseData[, names(gseData) != "HGNC"]
-
 # Save data
-# cnm = cleaned, normalized, mapped
-dataPath <- paste0(DATA_DIR, "/cnmData.rds")
-saveRDS(gseData, dataPath)
+dataPath <- paste0(DATA_DIR, "/normalizedCounts.rds")
+saveRDS(normalizedCounts, dataPath)
 ```
 <br/>
 

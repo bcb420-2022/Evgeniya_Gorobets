@@ -11,7 +11,7 @@
 
 <meta name="author" content="Evgeniya Gorobets" />
 
-<meta name="date" content="2022-02-15" />
+<meta name="date" content="2022-02-23" />
 
 <title>Assignment 1: Dataset Selection and Initial Processing</title>
 
@@ -169,7 +169,7 @@ pre code {
 
 <h1 class="title toc-ignore">Assignment 1: Dataset Selection and Initial Processing</h1>
 <h4 class="author">Evgeniya Gorobets</h4>
-<h4 class="date">15 Feb 2022</h4>
+<h4 class="date">23 Feb 2022</h4>
 
 </div>
 
@@ -581,7 +581,10 @@ print(geneCounts)</code></pre>
 ## Pre-TMM     5.89708073
 ## Post-TMM    5.87642360
 ## Difference -0.02065713</code></pre>
-<p>We notice that the difference in log2(CPM) between pre- and post-normalization is non-zero for each sample. Specifically, all the log2(CPMs) in normal kidney samples were increased during TMM while all the log2(CPMs) in MKD samples were decreased. We can thus conclude that our normalization was effective. <br /></p>
+<p>We notice that the difference in log2(CPM) between pre- and post-normalization is non-zero for each sample. Specifically, all the log2(CPMs) in normal kidney samples were increased during TMM while all the log2(CPMs) in MKD samples were decreased. We can thus conclude that our normalization was effective and save the normalized counts to a variable.</p>
+<pre class="r"><code>normalizedCounts &lt;- edgeR::cpm(dge)
+normalizedCounts &lt;- as.data.frame(normalizedCounts)</code></pre>
+<p><br /></p>
 </div>
 <div id="exploring-the-data" class="section level2">
 <h2>Exploring the Data</h2>
@@ -658,9 +661,8 @@ ensemblVersions[grepl(&quot;(2019)|(2018)&quot;, ensemblVersions$date), ]</code>
 
 # Connect to ENSEMBL gene marts, human dataset
 # At the time this was written, version 105 was the most current Ensembl release
-ensembl105 &lt;- biomaRt::useEnsembl(&quot;genes&quot;, dataset=humanDataset, version=105)</code></pre>
-<pre><code>## Ensembl site unresponsive, trying useast mirror</code></pre>
-<pre class="r"><code>ensembl95 &lt;- biomaRt::useEnsembl(&quot;genes&quot;, dataset=humanDataset, version=95)
+ensembl105 &lt;- biomaRt::useEnsembl(&quot;genes&quot;, dataset=humanDataset, version=105)
+ensembl95 &lt;- biomaRt::useEnsembl(&quot;genes&quot;, dataset=humanDataset, version=95)
 ensembl94 &lt;- biomaRt::useEnsembl(&quot;genes&quot;, dataset=humanDataset, version=94)</code></pre>
 <p>Since there are multiple ENSEMBL-related filters, I will first double check the types of ENSEMBL IDs that I have in my dataset</p>
 <pre class="r"><code># Check that all ENSEMBL IDs are gene IDs (not transcript/peptide IDs)
@@ -792,40 +794,37 @@ printMappingStats(geneIdMappings, &quot;Ensembl 105&quot;, originalMappings)</co
 ## Number of genes mapped to multiple symbols: 0
 ## Number of genes not mapped to any symbols: 806
 ## Number of genes mapped to different symbols relative to original mappings: 1127</code></pre>
-<p>I notice that quite a few (1127) of the HGNC symbols I retrieved from Biomart do not align with the HGNC symbols that were in the original dataset. This is likely due to an error in the study or a different Ensembl version. This disparity between HUGO identifiers suggests that I should not attempt to fill in the missing symbols in my mapping table with symbols from the original dataset. However, I can use the HGNC symbols from the original dataset to gain insight to my unmapped genes.</p>
-<pre class="r"><code># Replace original HGNC mappings with the ones I retrieved
-gseData &lt;- merge(
-  geneIdMappings, gseData, by.x=&#39;ensembl_gene_id&#39;, by.y=&#39;Ensembl&#39;, all.y=T)
-colnames(gseData)[colnames(gseData) == &quot;ensembl_gene_id&quot;] &lt;- &quot;Ensembl&quot;
+<p>I notice that quite a few (1127) of the HGNC symbols I retrieved from Biomart do not align with the HGNC symbols that were in the original dataset. This is likely due to an error in the study or a different Ensembl version. This disparity between HUGO identifiers suggests that I should not attempt to fill in the missing symbols in my mapping table with symbols from the original dataset.</p>
+<pre class="r"><code># Add my HUGO gene symbol mappings to the normalized counts
+normalizedCounts &lt;- merge(geneIdMappings, normalizedCounts, 
+                          by.x=&#39;ensembl_gene_id&#39;, by.y=&#39;row.names&#39;, all.y=T)
+
+# Rename columns for simplicity
+ensemblColumn &lt;- which(colnames(normalizedCounts) == &quot;ensembl_gene_id&quot;)
+colnames(normalizedCounts)[ensemblColumn] &lt;- &quot;Ensembl&quot;
+hugoCol &lt;- which(colnames(normalizedCounts) == &quot;hgnc_symbol&quot;)
+colnames(normalizedCounts)[hugoCol] &lt;- &quot;HGNC&quot;
 
 # Identify unmapped genes
-unmappedRows &lt;- is.na(gseData$hgnc_symbol)
-unmappedGenes &lt;- gseData[unmappedRows, c(&quot;Ensembl&quot;, &quot;HGNC&quot;, &quot;hgnc_symbol&quot;)]
-
-# What percentage of genes are unmapped?
-100 * nrow(unmappedGenes) / nrow(gseData)</code></pre>
+unmappedGenes &lt;- gseData[is.na(normalizedCounts$HGNC), c(&quot;Ensembl&quot;, &quot;HGNC&quot;)]
+nrow(unmappedGenes)</code></pre>
+<pre><code>## [1] 806</code></pre>
+<pre class="r"><code># What percentage of genes are unmapped?
+100 * nrow(unmappedGenes) / nrow(normalizedCounts)</code></pre>
 <pre><code>## [1] 5.659715</code></pre>
-<p>806 of 14,241 genes are unmapped. This corresponds to 5.66% of all the genes in my dataset. First, I check whether the unmapped genes are ribosomal proteins, which do not affect differential expression analysis.</p>
-<pre class="r"><code># How many are ribosomal proteins?
-length(grep(&quot;^RP&quot;, unmappedGenes$HGNC))</code></pre>
-<pre><code>## [1] 4</code></pre>
-<p>Only 4 of the unmapped genes are ribosomal proteins, so there are 802 other genes that are unmapped. To try and investigate, I will look up the first few unmapped genes in the Ensembl database.</p>
+<p>806 of 14,241 genes are unmapped. This corresponds to 5.66% of all the genes in my dataset. To try and investigate, I will look up the first few unmapped genes in the Ensembl database.</p>
 <pre class="r"><code>head(unmappedGenes)</code></pre>
 <div data-pagedtable="false">
 <script data-pagedtable-source type="application/json">
-{"columns":[{"label":[""],"name":["_rn_"],"type":[""],"align":["left"]},{"label":["Ensembl"],"name":[1],"type":["chr"],"align":["left"]},{"label":["HGNC"],"name":[2],"type":["chr"],"align":["left"]},{"label":["hgnc_symbol"],"name":[3],"type":["chr"],"align":["left"]}],"data":[{"1":"ENSG00000005955","2":"GGNBP2","3":"NA","_rn_":"93"},{"1":"ENSG00000006114","2":"SYNRG","3":"NA","_rn_":"102"},{"1":"ENSG00000017621","2":"MAGIX","3":"NA","_rn_":"288"},{"1":"ENSG00000034063","2":"UHRF1","3":"NA","_rn_":"397"},{"1":"ENSG00000056661","2":"PCGF2","3":"NA","_rn_":"600"},{"1":"ENSG00000068793","2":"CYFIP1","3":"NA","_rn_":"845"}],"options":{"columns":{"min":{},"max":[10]},"rows":{"min":[10],"max":[10]},"pages":{}}}
+{"columns":[{"label":[""],"name":["_rn_"],"type":[""],"align":["left"]},{"label":["Ensembl"],"name":[1],"type":["chr"],"align":["left"]},{"label":["HGNC"],"name":[2],"type":["chr"],"align":["left"]}],"data":[{"1":"ENSG00000005955","2":"GGNBP2","_rn_":"113"},{"1":"ENSG00000006114","2":"SYNRG","_rn_":"127"},{"1":"ENSG00000017621","2":"MAGIX","_rn_":"381"},{"1":"ENSG00000034063","2":"UHRF1","_rn_":"516"},{"1":"ENSG00000056661","2":"PCGF2","_rn_":"774"},{"1":"ENSG00000068793","2":"CYFIP1","_rn_":"1064"}],"options":{"columns":{"min":{},"max":[10]},"rows":{"min":[10],"max":[10]},"pages":{}}}
   </script>
 </div>
 <p>For each of the six gene IDs above, an ENSEMBL search revealed that these have been deprecated since ENSEMBL Version 76 (i.e., version 75 was the last to contain these gene identifiers) (Howe et al, 2021). This strongly suggests that the authors of this dataset used Ensembl version 75 or less when creating this dataset.</p>
 <p>However, using such an old version of gene identifiers is ill-advised, as it may cause me to lose out on newer gene annotations, which may impact my downstream analysis (especially in gene set enrichment). Therefore, I will stick to my HGNC symbols (rather than the ones from the original dataset), but I will not remove the unmapped genes. If in later analysis, the unmapped genes are significant (i.e., they turn out to be differentially expressed), then I will explore those genes further and see if they have more modern identifiers in Ensembl that do map to HUGO gene symbols.</p>
 <p>As a result of this decision, the final product of my notebook is not a data frame with only numeric columns and unique HUGO symbols, but a data frame with unique gene identifiers, some of which lack HUGO symbols.</p>
-<pre class="r"><code># Remove old HGNC symbols
-gseData &lt;- gseData[, names(gseData) != &quot;HGNC&quot;]
-
-# Save data
-# cnm = cleaned, normalized, mapped
-dataPath &lt;- paste0(DATA_DIR, &quot;/cnmData.rds&quot;)
-saveRDS(gseData, dataPath)</code></pre>
+<pre class="r"><code># Save data
+dataPath &lt;- paste0(DATA_DIR, &quot;/normalizedCounts.rds&quot;)
+saveRDS(normalizedCounts, dataPath)</code></pre>
 <p><br /></p>
 </div>
 <div id="conclusion" class="section level2">
