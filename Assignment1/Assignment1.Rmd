@@ -39,11 +39,6 @@ if (!requireNamespace("biomaRt", quietly = TRUE)) {
     BiocManager::install("biomaRt")
 }
 
-# Change working directory, if needed
-if (getwd() == "/home/rstudio") {
-  setwd("./projects/Assignment1")
-}
-
 # Set constants
 GSE <- 'GSE129943'
 DATA_DIR <- 'data'
@@ -676,12 +671,7 @@ each condition.
 Because I did not remove any of the unmapped genes, the final coverage of my 
 dataset was 14,241 human genes.
 
-## Clean-Up
-
-```{r}
-# Clear workspace
-rm(list = ls())
-```
+<br/>
 
 ## References
 
