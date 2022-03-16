@@ -1,0 +1,1196 @@
+---
+title: "Assignment 2: Differential Gene Expression and Preliminary Gene Set Enrichment Analysis"
+author: Evgeniya Gorobets
+date: "`r format(Sys.time(), '%d %b %Y')`"
+output:
+  bookdown::html_document2:
+    number_sections: FALSE
+    fig_caption: TRUE
+    toc: TRUE
+bibliography: Assignment2/citations.bib
+csl: Assignment2/apa.csl
+---
+
+## Introduction
+
+This report performs differential gene expression analysis and basic over-representation (thresholded gene set enrichment) analysis on expression data retrieved from GSE129943. The publication that produced this dataset can be accessed on the [_Cell_ website](https://www.cell.com/cell/fulltext/S0092-8674(19)30741-X?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS009286741930741X%3Fshowall%3Dtrue) [@dvela2019].This report builds on top of "Assignment 1: Dataset Selection and Initial Processing", which can be downloaded and read [here](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/Assignment1.html). The previous report cleaned the bulk RNASeq data from GSE129943, removing any low-count and duplicated genes. Additionally, the previous report performed TMM normalization on the read counts, visualized the normalized counts using MDS plots, mean-variance plots, and distribution curves. The final dataset produced by the report had 14,241 genes and six samples, three of which are replicates of normal human kidney cells and three of which are replicates of Muc1 Kidney Disease (MKD) cells. This report will be comparing the gene expression between normal kidney cells and MKD cells to identify enriched pathways, so as to better understand the mechanisms of MKD.
+
+
+### Acknowledgements
+
+This R Notebook was developed by Evgeniya Gorobets as part of an assessment for 
+2022 BCB420H: Computational Systems Biology, University of Toronto, Toronto, CA.
+Specifically, this notebook was the final submitted product for Assignment 2 
+of the course.
+The journal entries accompanying this R Notebook are listed below.
+
+* [2.5 Identifying Differentially Expressed Genes in my GEO Dataset](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/2.5-Identifying-Differentially-Expressed-Genes-in-my-GEO-Dataset)
+* [2.6 Over Representation Analysis (ORA) on my GEO Dataset](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/2.6-Over-Representation-Analysis-(ORA)-on-my-GEO-Dataset)
+* [2.7 Assignment 2 Report](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/2.7-Assignment-2-Report)
+
+### Contributions
+
+This report was created in R [@baseR] with the `knitr` [@xie2013, 
+@xie2017; @xie2018] and `kableExtra` packages [@kableExtra]. 
+`edgeR` [@robinson2010; @mccarthy2012; @chen2016] was 
+used to estimate dispersion and perform differential gene expression analysis. 
+`ggplot2` [@ggplot2] was used to create the volcano plots in this report. 
+`ComplexHeatmap` [@complexheatmap] and `circlize` [@circlize] were used to 
+create the heatmaps in this report. The `gprofiler2` package [@gprofiler2], 
+which is built on top of the g:Profiler API [@raudvere2019], was used to 
+perform over-representation analysis. ORA plots were generated with 
+`gprofiler2` [@gprofiler2] and `plotly` [@plotly]. The report was created inside 
+a Docker image [@merkel2014] whose base is Rocker [@rocker].
+
+### Set-Up
+
+```{r warning=FALSE, message=FALSE}
+# Install required packages
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  install.packages("kableExtra")
+}
+if (!requireNamespace("edgeR", quietly = TRUE)) {
+  install.packages("edgeR")
+}
+if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+if(!requireNamespace("gprofiler2", quietly = TRUE)) {
+  install.packages("gprofiler2")
+}
+if (!requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+  install.packages("ComplexHeatmap")
+}
+# circlize::colorRamp2 required for continuous color scaling in ComplexHeatmap
+if (!requireNamespace("circlize", quietly = TRUE)) {
+  install.packages("circlize")
+}
+if (!requireNamespace("plotly", quietly = TRUE)) {
+  install.packages("plotly")
+}
+
+dataDir <- 'data'
+
+# Source A1 to get normalized counts
+a1 <- knitr:: knit_child('./Assignment1/Assignment1.Rmd', quiet=T)
+expressionSet <- normalizedCounts
+```
+
+<br/>
+
+## Differential Gene Expression Analysis
+
+### Design Matrix
+
+The MDS plot from 
+[Assignment 1](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1/Assignment1.html) 
+shows that all the MKD samples were highly clustered in both dimensions and all 
+the control (normal kidney) samples were clustered in one dimension. 
+Additionally, the publication that produced this data set [@dvela2019] 
+stated that there was no biological relation between the control and test 
+samples. Therefore, the only factor in the design matrix is whether each sample 
+is from a normal kidney or an MKD patient.
+
+```{r design-matrix, warning=FALSE, message=FALSE}
+# Convert the normalized counts into a matrix
+counts <- expressionSet[3:8]
+rownames(counts) <- expressionSet$Ensembl
+
+# Create a data.frame containing the type (normal/MKD) of each sample
+sampleTypes <- unlist(lapply(colnames(counts), function(sampleName) {
+  strsplit(sampleName, "_")[[1]][1]
+})) 
+samples <- data.frame(sample = colnames(counts), type = sampleTypes)
+
+# Create a design matrix
+designMatrix <- model.matrix(~ samples$type)
+kableExtra::kable_styling(knitr::kable(
+  designMatrix, type="html", 
+  col.names = c("Intercept", "Samples.TypeP1A8"),
+  caption=paste("The design matrix for the GSE129943 dataset.",
+                "The Samples.TypeP1A8 column represents which of",
+                "the samples is derived from an MKD patient.")),
+  "condensed")
+```
+
+The design matrix shown in Table \@ref(tab:design-matrix) clearly demonstrates 
+that three of the samples are of type P1A8 (i.e., MKD cells).
+
+### Differential Analysis
+
+Now that the design matrix is defined, I can proceed with the differential 
+gene expression analysis. I will use the negative binomial generalized 
+linear model and the quasi-likelihood test, both implemented in the `edgeR` 
+package [@robinson2010; @mccarthy2012; @chen2016]. 
+I chose to use the `edgeR` package because it was designed specifically 
+for bulk RNASeq data.
+
+```{r warning=FALSE, message=FALSE}
+# Set up a DGEList using our counts matrix and design matrix
+counts <- as.matrix(counts)
+dge <- edgeR::DGEList(counts=counts, group=samples$type)
+dge <- edgeR::estimateDisp(dge, designMatrix)
+
+# Fit the model using glmGLFit
+fit <- edgeR::glmQLFit(dge, designMatrix)
+
+# Compute differential expression and extract results into data.frame
+qlfResults <- edgeR::glmQLFTest(fit, coef='samples$typeP1A8')
+```
+
+The next step is to identify the genes that were significantly differentially 
+expressed. We are going to explore the number of DEGs under four different 
+thresholds (0.05, 0.01, 0.005, 0.001) so that we may choose the p-value that is 
+most appropriate for our data.
+
+```{r num-sig-degs, warning=FALSE, message=FALSE}
+pvals <- c(0.05, 0.01, 0.005, 0.001)
+numSignificant <- unlist(lapply(pvals, function(pval) {
+  length(which(qlfResults$table$PValue < pval))
+}))
+kableExtra::kable_styling(knitr::kable(
+  data.frame(`P-Value`=pvals, `Num. Significant Genes`=numSignificant, 
+             check.names=F),
+  caption=paste("The number of significantly differentially",
+                "expressed genes in the GSE129943 dataset, based",
+                "on four different p-value thresholds."),
+  type="html"), "condensed")
+```
+
+Table \@ref(tab:num-sig-degs) shows that there are a large amount of significant 
+DEGs, even when using a 
+p-value as small as 0.001. This suggests a stronger threshold should be used 
+to generate the thresholded gene lists for gene set enrichment analysis. 
+However, before deciding a threshold, we must first adjust our p-values to 
+correct for Multiple Hypothesis Testing.
+
+### Multiple Hypothesis Testing {#mht}
+
+Because we are testing for differential expression in thousands of genes 
+(14,241 genes, to be precise), and each gene has its own null hypothesis that is 
+being tested ( $H_0^{(X)} = $ gene $X$ is not differentially expressed), we 
+must consider the effects of Multiple Hypothesis Testing. Because we are testing 
+so many hypotheses simultaneously, there is a much greater chance of false 
+positives (Type I errors). In other words, there is a higher probability that 
+a gene that is not differentially expressed will still have a p-value less 
+than the significance threshold.
+
+To correct for this, I will use the Benjamini-Hochberg procedure to compute a 
+BH-adjusted p-value, also known as the False Discovery Rate (FDR). I am 
+the Benjamini-Hochberg adjustment method because it is the most commonly used 
+in recent literature and because it is less stringent than other correction 
+methods (e.g., Bonferroni).
+
+As above, we're going to find the number of genes with significant differential 
+expression under four different thresholds: 0.05, 0.01, 0.005, 0.001.
+
+```{r num-very-sig-degs, warning=FALSE, message=FALSE}
+qlfAdjusted <- edgeR::topTags(qlfResults, n=nrow(counts), adjust.method="BH", 
+                              sort.by="PValue")
+
+numSigAdj <- unlist(lapply(pvals, function(pval) {
+  length(which(qlfAdjusted$table$FDR < pval))
+}))
+kableExtra::kable_styling(knitr::kable(
+  data.frame(`Adjusted P-Value (FDR)`=pvals, `Num. Significant Genes`=numSigAdj, 
+              check.names=F), 
+  caption=paste("The number of significantly differentially",
+                "expressed genes in the GSE129943 dataset after",
+                "Benjaminig-Hochberg correction, based on four",
+                "different FDR thresholds."),
+  type="html"), "condensed")
+```
+
+Even with adjustment for Multiple Hypothesis Testing, more than 2000 genes had 
+a significant change in expression, even with the strictest threshold of 0.001 (Table \@ref(tab:num-very-sig-degs)).
+
+Let us consider two thresholds (0.05 and 0.001) and the DEG list that would be 
+produced by each threshold. The DEGs produced by the stricter threshold (0.001) 
+would have stronger signals, so the gene set enrichment analysis would reveal 
+only the most strongly up-regulated or down-regulated pathways. This may help 
+identify the most important biological processes in MKD cells, but may miss out 
+on weakly-regulated pathways that still offer key insights to the mechanisms of 
+MKD cells. On the other hand, gene set enrichment analysis on the DEG list 
+produced by the weaker threshold (0.05) will likely reveal more pathways, but 
+may fail to highlight the most important ones. I believe that it is important 
+to conduct gene set enrichment analysis on both DEG lists, to get both a "deep" 
+view and a "broad" view of the enriched pathways. Therefore, I will subset the 
+`qlfResults` based on an adjusted p-value of 0.05 and 0.001. Since enough genes 
+pass correction, moving forward I will only consider genes with a significant 
+FDR (i.e., I will not subset or analyze based on the un-adjusted p-values).
+
+```{r warning=FALSE, message=FALSE}
+# Subset QLF results based on both p-values
+sigResults <- qlfAdjusted$table[qlfAdjusted$table$FDR < 0.05, ]
+verySigResults <- qlfAdjusted$table[qlfAdjusted$table$FDR < 0.001, ]
+
+# Get the up and down-regulated genes
+upRegGenes <- rownames(sigResults[sigResults$logFC > 0, ])
+veryUpRegGenes <- rownames(verySigResults[verySigResults$logFC > 0, ])
+
+downRegGenes <- rownames(sigResults[sigResults$logFC < 0, ])
+veryDownRegGenes <- rownames(verySigResults[verySigResults$logFC < 0, ])
+
+# Save all the gene lists
+geneLists <- list("upreg_genelist_01" = upRegGenes,
+                  "downreg_genelist_01" = downRegGenes, 
+                  "upreg_genelist_001" = veryUpRegGenes, 
+                  "downreg_genelist_001" = veryDownRegGenes)
+
+for (geneList in names(geneLists)) {
+  write.table(geneLists[[geneList]], 
+              file=paste0(dataDir, "/", geneList, ".txt"), 
+              quote=F, sep="\n", row.names=F, col.names=F)
+}
+```
+
+<br/>
+
+## Visualizing DEGs
+
+### Volcano Plots
+
+First, we will use a volcano plot to visualize our DEGs relative to our full 
+gene list.
+
+```{r volcano1, warning=FALSE, message=FALSE, fig.cap="A volcano plot showing the expression change (log2FC) and significance of the expression change after BH correction (-log10FDR) for all genes in the cleaned GSE129943 dataset.", out.width="100%"}
+# Copy relevant data from QLF Test results
+fdrs <- qlfAdjusted$table[, c("logFC", "FDR")]
+
+# Add a column that indicates whether each gene is not a DEG, a DEG but only 
+# with threshold=0.05 (significant), or a DEG with threshold=0.001 (very sig.)
+# and whether it is up/down regulated
+# NOTE: use strings instead of numbers so ggplot2 knows it is discrete
+fdrs$significance <- "0"
+fdrs$significance[fdrs$FDR < 0.05 & fdrs$logFC > 0] <- "11"
+fdrs$significance[fdrs$FDR < 0.05 & fdrs$logFC < 0] <- "12"
+fdrs$significance[fdrs$FDR < 0.001 & fdrs$logFC > 0] <- "21"
+fdrs$significance[fdrs$FDR < 0.001 & fdrs$logFC < 0] <- "22"
+
+# Add a column with log10(FDR)
+fdrs$logFDR <- -log10(fdrs$FDR)
+
+
+# Build volcano plot
+plot <- ggplot2::ggplot(fdrs, ggplot2::aes(x=logFC, y=logFDR, col=significance))
+
+# Add scatter points and color appropriately
+plot <- plot + ggplot2::geom_point() + 
+  ggplot2::scale_color_manual(
+    name = "Significance and\nExpression Change",
+    labels=c("FDR >= 0.05", 
+             "0.001 <= FDR < 0.05; upregulated", 
+             "0.001 <= FDR < 0.05; downregulated", 
+             "FDR < 0.001; upregulated",
+             "FDR < 0.001; downregulated"),
+    values=c("gray", "pink", "turquoise2", "red", "blue"))
+
+# Define styling and significance lines and add them to the plot
+plotStyle <- ggplot2::theme(
+  plot.title = ggplot2::element_text(hjust = 0.5),
+  panel.background = ggplot2::element_rect(fill="white", color="black"),
+  panel.grid.major = ggplot2::element_line(colour="#eeeeee"),
+  panel.grid.minor = ggplot2::element_line(colour="#eeeeee"))
+
+fdr05Line <- ggplot2::geom_hline(yintercept=-log10(0.05), linetype='dotted', 
+                                 col = 'black', size=1)
+fdr001Line <- ggplot2::geom_hline(yintercept=-log10(0.001), linetype='dotted', 
+                                  col = 'black', size=1)
+
+plot <- plot + plotStyle + fdr05Line + fdr001Line
+  
+# Add title, axis labels
+xLabel <- "Log2 FC"
+yLabel <- "-Log10 FDR"
+title <- "DEGs in GSE129943 (-logFDR vs. logFC)"
+plot <- plot + 
+  ggplot2::ggtitle(title) + ggplot2::ylab(yLabel) + ggplot2::xlab(xLabel)
+  
+plot
+```
+
+The volcano plot in Figure \@ref(fig:volcano1) is fairly symmetrical, indicating that there are roughly an 
+equal number of up-regulated and down-regulated genes in MKD cells (relative 
+to normal kidney cells). This plot also visualizes what was already demonstrated 
+numerically: that the number of very significantly (FDR < 0.001) differentially 
+expressed genes is quite large (2486 genes out of 14,241, i.e., an astonishing 
+17.46%). Moreover, more than half of significantly regulated genes (FDR < 0.05) 
+are very significantly regulated (2486 genes out of 4602 = 54%); this is shown 
+by the proportion of red dots to pink dots on the volcano plot.
+
+There are three genes highlighted in the study that produced this data: MUC1, 
+ATF6, and TMED9 [@dvela2019]. MUC1 is the gene responsible for MKD 
+(MKD = Mucin 1 Kidney Disease) [@dvela2019]. A frame shift in MUC1 
+(producing the mutant MUC1-fs allele) causes a misfolded version of 
+the Mucin 1 protein to accumulate in cells [@dvela2019].
+ATF6 is the gene that encodes Activating Transcription Factor 6. This TF 
+activates one of the three branches of unfolded protein 
+response (UPR), which 
+is a cellular response that helps clear misfolded proteins from the cell and 
+maintain ER homeostasis [@dvela2019].
+In the original study, the authors compared this RNASeq data with a published 
+transcriptional signature of ATF6-specific UPR activation [@adamson2016] 
+and concluded that the ATF6 branch is significantly up-regulated [@dvela2019].
+The final gene of interest is TMED9, which encodes a cargo receptor in the p24 
+family that is found on vesicles in the early secretory pathway [@dvela2019]. 
+According to the Dvela-Levitt et al., TMED9-containing vesicles trap 
+misfolded MUC1 proteins, preventing them from lysosomic degradation; thus, 
+TMED9 plays a key role in the development of MKD [@dvela2019]. In the study, 
+Dvela-Levitt et al. performed immuno-fluorescence (IF) microscopy on normal 
+kidney organoids and MKD patient-derived organoids and found that 
+TMED9 was significantly more abundant in patient-derived organoids [@dvela2019].
+
+Because of the critical roles of MUC1, ATF6, and TMED9 in MKD, it is important to 
+visualize these genes in our normalized expression data.
+
+```{r volcano2, warning=FALSE, message=FALSE, fig.cap="A volcano plot showing the expression change (log2FC) and significance of the expression change after BH correction (-log10FDR) of MUC1, ATF6, and TMED9 relative to all other genes in the cleaned GSE129943 dataset.", out.width="100%"}
+# Get Ensembl gene IDs for each gene of interest
+muc1 <- expressionSet$Ensembl[which(expressionSet$HGNC == "MUC1")]
+atf6 <- expressionSet$Ensembl[which(expressionSet$HGNC == "ATF6")]
+tmed9 <- expressionSet$Ensembl[which(expressionSet$HGNC == "TMED9")]
+
+# Label the genes of interest so that they have their own colour
+fdrs$`Genes of Interest` <- "0"
+fdrs[muc1, "Genes of Interest"] <- "1"
+fdrs[atf6, "Genes of Interest"] <- "2"
+fdrs[tmed9, "Genes of Interest"] <- "3"
+# Sort so that the colored points are plotted last
+fdrs <- fdrs[order(fdrs$`Genes of Interest`, decreasing = F), ]
+
+
+# Build new volcano plot
+plot <- ggplot2::ggplot(fdrs, ggplot2::aes(x=logFC, y=logFDR, 
+                                           col=`Genes of Interest`, 
+                                           alpha=`Genes of Interest`))
+
+# Add scatter points and color appropriately
+plot <- plot + ggplot2::geom_point() + 
+  ggplot2::scale_color_manual(labels=c("Other genes", "MUC1", "ATF6", "TMED9"),
+                              values=c("gray", "red", "blue", "green")) + 
+  ggplot2::scale_alpha_manual(labels=c("Other genes", "MUC1", "ATF6", "TMED9"),
+                              values=c(0.1, 1.0, 1.0, 1.0))
+
+# Add threshold lines and styling
+plot <- plot + plotStyle + fdr05Line + fdr001Line
+
+# Add title, axis labels
+xLabel <- "Log2 FC"
+yLabel <- "-Log10 FDR"
+title <- "DEGs in GSE129943 (-logFDR vs. logFC)"
+plot <- plot + 
+  ggplot2::ggtitle(title) + ggplot2::ylab(yLabel) + ggplot2::xlab(xLabel)
+
+plot
+```
+
+The volcano plot in Figure \@ref(fig:volcano2) reveals that each gene of interest had a minimal, insignificant 
+change in expression. To get more insight, we will also look at the unadjusted 
+p-values for each of these genes.
+
+```{r pvals, warning=FALSE, message=FALSE}
+kableExtra::kable_styling(
+  knitr::kable(
+    qlfAdjusted$table[c(muc1, atf6, tmed9), c("logFC", "PValue", "FDR")],
+    caption="Log fold change, p-value, and FDR of MUC1, ATF6, and TMED9.", 
+    type="html"),
+  "condensed")
+```
+
+The unadjusted p-values for each of these genes was greater than 0.1, and 
+therefore don't pass even the weakest threshold of significance (Table \@ref(tab:pvals)). It is unclear 
+whether the RNASeq technology used would differentiate between the MUC1-fs 
+(frame shift) and MUC1-wt (wild type) transcripts. Assuming both types 
+of transcripts get classified as MUC1, then we would not expect a 
+significant difference in MUC1 expression 
+between MKD cells and normal kidney cells (since the MUC1-fs mutation does not 
+affect the transcription of the gene). Therefore, the very high p-value and 
+relatively low log fold change for MUC1 is not surprising. 
+
+On the other hand, the low log fold changes for ATF6 and TMED9 are unexpected. 
+Although differential expression analysis alone is not enough to confirm whether 
+the entire ATF6 branch of UPR was up-regulated in MKD cells, one would expect 
+that at least the ATF6 gene would be significantly up-regulated. 
+However, this is not the case, 
+so further investigation via gene set enrichment analysis is required. 
+
+For TMED9, the authors of the study made no claim about transcriptional 
+up-regulation; they only observed increased protein abundance in MKD 
+patient-derived organoids [@dvela2019]. 
+However, one would expect the TMED9 gene to be significantly up-regulated 
+in MKD cells in order to produce the observed TMED9 protein abundance. 
+Again, further insight is required to determine why the results of this 
+differential gene expression analysis seem to contradict the results of 
+the study.
+
+<br/>
+
+### Heatmaps
+
+Next, we will examine our expression set with a series of heatmaps.
+
+```{r heatmap-all-genes, warning=FALSE, message=FALSE, out.width="100%", fig.cap="A heatmap showing the normalized and gene-scaled expression change of all genes in the cleaned GSE129943 dataset. Each row represents a gene, each column represents a biological sample, and both genes and samples are clustered together based on the expression data."}
+plotHeatmap <- function(counts, title) {
+  # Row normalization (scale each gene)
+  # NOTE: need to use t() because scale operates on columns
+  scaledCounts <- t(scale(t(counts)))
+  
+  # Define colours
+  breaks <- c(min(scaledCounts), 0, max(scaledCounts))
+  colors <- circlize::colorRamp2(breaks=breaks, 
+                                 colors=c("red", "white", "blue"))
+  
+  # NOTE: use column_title as the main title
+  heatmap <- ComplexHeatmap::Heatmap(
+    scaledCounts, col=colors, show_column_names=T, show_row_names=F, 
+    show_row_dend=T, show_column_dend=T, column_names_rot=45,
+    row_title="Genes", column_title=title,
+    row_title_side="left", column_title_side = "top",
+    heatmap_legend_param=list(title = "Gene-Scaled Counts"))
+  return(heatmap)
+}
+
+plotHeatmap(counts, paste0("Heatmap of Normalized and Gene-Scaled\n",
+                           "RNASeq Counts in GSE129943 (all genes)"))
+
+```
+
+```{r heatmaps-degs, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap="Two heatmap showing the normalized and gene-scaled expression change of significant DEGs in the cleaned GSE129943 dataset. The left heatmap includes all DEGs with FDR < 0.05. The right heatmap includes all DEGs with FDR < 0.001. Each row represents a gene, each column represents a biological sample, and both genes and samples are clustered together based on the expression data."}
+plotHeatmap(counts[rownames(sigResults), ], 
+            paste0("Heatmap of Normalized and Gene-Scaled\n",
+                   "RNASeq Counts in GSE129943 (FDR < 0.05)"))
+plotHeatmap(counts[rownames(verySigResults), ], 
+            paste0("Heatmap of Normalized and Gene-Scaled\n",
+                   "RNASeq Counts in GSE129943 (FDR < 0.001)"))
+```
+
+The first heatmap (Figure \@ref(fig:heatmap-all-genes)), has a visible signal differentiating MKD cells and normal kidney cells, despite inlcuding non-diffentially expressed genes. 
+In the column dendogram, we observe that the MKD samples cluster together and 
+the normal kidney samples cluster together, reflecting the strong separation we 
+saw earlier in the MDS plot. When only DEGs are mapped (FDR < 0.05; Figure \@ref(fig:heatmaps-degs), left), the 
+signal in the heatmap becomes a lot stronger. It looks as though each gene is 
+either up-regulated in **all** the normal kidney samples and down-regulated in 
+**all** the MKD samples, or vice-versa. The last heatmap (Figure \@ref(fig:heatmaps-degs), right), which includes only 
+genes with FDR < 0.001, is very similar to the second. It shows the same strong 
+signal, but has fewer white-colored or pale-colored cells. In other words, the 
+final heatmap only shows genes that are _strongly_ up- or down-regulated.
+
+<br/>
+
+## Over-Representation Analysis
+
+### Method and Platform
+I will use Fisher's Exact Test for my over-representation analysis. There are 
+two main reasons why we are using Fisher's Exact Test instead of a binomial or 
+chi-squared test:
+
+1. Most publicly available ORA tools use Fisher's Exact Test for their ORA (e.g., 
+g:Profiler, PANTHER, Enrichr); by contrast, there are very few platforms 
+that use the binomial or chi-squared test. This means that it is more practical and pragmatic  
+to use Fisher's Exact Test for gene set enrichment analysis, because it is already 
+implemented in so many platforms. It also suggests that Fisher's Exact Test is 
+a better metric for ORA, because it is the method of choice by the researchers and 
+consortia that implemented these ORA tools.
+2. Fisher's Exact Test is a more exact statistical test for overrepresentation [@kim2017].
+By contrast, the chi-squared test is based on an approximation that requires a sufficiently 
+large sample [@kim2017]. Therefore, I believe that Fisher's Exact Test will produce 
+better results in my ORA than the other thresholded tests.
+
+As stated above, there are multiple platforms that implement Fisher's Exact Test 
+in the context of thresholded gene set enrichment. I will use g:Profiler as my 
+ORA tool because (a) it is frequently updated, with updates 
+occurring approximately every three months, following quarterly releases of 
+Ensembl databases; (b) it contains human gene set annotation 
+from all the major annotation datasets (GO, Reactome, KEGG, WikiPathways), (c) 
+it accepts ENSEMBL gene IDs in its 
+gene list, which is the primary type of identifier I am using; (d) it has an 
+accompanying R package, so I can query their database programatically; and (e) 
+it is the platform I am most familiar with [@raudvere2019; @gprofiler2].
+
+<br/>
+
+### Annotation Datasets
+To get the most insight into our data and retrieve all possible significant 
+pathways, I will use all the pathway annotation datasets available in 
+g:Profiler. This includes GO Biological Processes [@ashburner2000go, 
+@gene2021go], KEGG pathways [@kanehisa2000kegg; @kanehisa2019kegg, 
+@kanehisa2021kegg], Reactome data [@gillespie2022reactome], and WikiPathways 
+[@martens2021wikipathways]. 
+I will not include electronic GO annotations because my 
+thresholded gene lists are sufficiently long and should produce results 
+even without electronic annotations.
+
+The version of these four annotation datasets are listed in Table \@ref(tab:versions).
+
+```{r versions, warning=FALSE, message=FALSE}
+annotationData <- c("GO:BP", "KEGG", "REAC", "WP")
+
+# Get version info for all annotation datasets
+versions <- gprofiler2::get_version_info(organism = "hsapiens")
+
+# Format into a readable table
+versionsDf <- as.data.frame(do.call(rbind, versions$sources[annotationData]))
+versionsDf$version <- gsub("\\n", "; ", versionsDf$version)
+colnames(versionsDf) <- c("Annotation Dataset Name", "Version")
+kableExtra::kable_styling(
+  knitr::kable(versionsDf, 
+             caption=paste("Version information for GO, KEGG, Reactome, and",
+                           "WikiPathways pathway annotations"), type="html"),
+  "condensed"
+)
+```
+
+GO and Reactome annotations rely on BioMart releases, so I will also note 
+the BioMart version used in my over-rerpresentation analysis.
+
+```{r}
+cat(paste("BioMart Version:", versions$biomart, versions$biomart_version))
+```
+<br/>
+
+### ORA Results
+
+First, I define two helper functions to help with my gene set enrichment analysis.
+
+```{r}
+getGeneSets <- function(queryGenes, annotationSources, backgroundGenes=NULL) {
+  # Determine whether the background for Fisher's test will be custom
+  if (is.null(backgroundGenes)) {
+    domainScope <- "annotated"
+  } else {
+    domainScope <- "custom"
+  }
+  
+  return(
+    gprofiler2::gost(query = queryGenes,organism = "hsapiens", 
+                     ordered_query = F, multi_query = F, significant = F, 
+                     exclude_iea = T, measure_underrepresentation = F, 
+                     evcodes = F, user_threshold = 0.05, 
+                     correction_method = "fdr", domain_scope = domainScope, 
+                     custom_bg = backgroundGenes, sources = annotationSources)
+  )
+}
+
+getTopGeneSets <- function(oraDf, annotationSource, numSets=10) {
+  results <- oraDf[oraDf$source == annotationSource, ]
+  topResults <- results[1:numSets, c("source", "term_id", "term_name", 
+                                     "term_size", "p_value") ]
+  colnames(topResults) <- c("Source", "Term ID", "Term Name", "Term Size", 
+                            "P-Value")
+  return(topResults)
+}
+```
+
+I am choosing a significance threshold of 0.05 because it is the most common 
+threshold to use and because I want to fetch as many gene sets as possible. I 
+am again using the Benjamini-Hochberg procedure to correct for multiple 
+hypothesis testing, for the same reasons described in [Multiple Hypothesis 
+Testing](#mht).
+
+<br/>
+
+#### FDR < 0.05
+
+I will start by performing ORA on significantly regulated genes (DEG threshold: FDR < 0.05).
+
+##### Up-regulated
+
+```{r oraPlot1, warning=FALSE, message=FALSE, fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on significantly (FDR < 0.05) up-regulated genes in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+bgGenes <- rownames(counts) 
+
+oraFile <- paste0(dataDir, "/upreg_ora_05.rds")
+if (!file.exists(oraFile)) {
+  # Fetch ORA results from g:Profiler if they aren't saved and save them
+  upRegORA <- getGeneSets(upRegGenes, annotationData, bgGenes)
+  saveRDS(upRegORA, file=oraFile)
+} else {
+  # Load ORA results (streamlines so I don't have to query g:Profiler each time)
+  upRegORA <- readRDS(oraFile)
+}
+
+# Save all ORA results in list
+allOras <- list()
+allOras[[1]] <- list(result = upRegORA$result, 
+                     sig = "FDR < 0.05", expr = "Up-regulated")
+oraPlot <- gprofiler2::gostplot(upRegORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in Up-Regulated DEG List',
+                                       '(Threshold: FDR < 0.05)'),
+               xaxis = list(title = 'Annotation Dataset'))
+```
+
+The interactive plot in Figure \@ref(fig:oraPlot1) helps us easily identify the most significantly 
+over-represented gene sets in our up-regulated gene list. However, if we look at 
+the top give GO:BP gene sets from our results (Table \@ref(tab:topgo)), we notice that they have 
+extremely vague names and each contains more than 3000 genes.
+
+```{r topgo, warning=FALSE, message=FALSE}
+kableExtra::kable_styling(
+  knitr::kable(getTopGeneSets(upRegORA$result, "GO:BP", numSets=5), 
+               caption=paste("Top five over-represented GO:BP gene sets in ORA",
+                             "of up-regulated DEGs with FDR < 0.05"),
+               digits=42, type="html"),
+  "condensed")
+```
+
+These "parent" gene sets are not informative, and therefore we will narrow down 
+our analysis to smaller gene sets (containing no more than 200 genes).
+
+```{r ora1, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets <- function(ora, annotationSources, numSets=10) {
+  smallGeneSets <- ora$result[ora$result$term_size <= 200, ]
+  for (dataset in annotationSources) {
+    
+    geneSetKable <- knitr::kable(
+      getTopGeneSets(smallGeneSets, dataset, numSets=numSets), 
+      caption=paste("Top", numSets, "over-represented small gene sets from", 
+                    dataset, "in ORA of", ora$expr, "DEGs with", ora$sig, ".",
+                    "'Small' gene sets are defined as any gene sets with at",
+                    "most 200 genes."),
+      digits=42, valign='t', row.names=FALSE, format="html")
+    
+    print(kableExtra::kable_styling(geneSetKable, "condensed"))
+    cat('\n <br/> \n')
+  }
+}
+
+showTopSmallGeneSets(allOras[[1]], annotationData)
+```
+
+Table \@ref(tab:ora1) shows the ten most significantly over-represented gene sets from each annotation source, based on the up-regulated gene list with threshold 0.05. For each annotation dataset, the top gene sets were related to viral response, interferon 
+signaling, cell cycle, and apoptosis. While these were not mentioned in the 
+study, it is believable that kidney cells might react similarly to a toxic 
+proteinopathy as they do to viral infection (viral response generally involves 
+changes in the cell cycle, apoptosis, and interferon signaling).
+
+<br/>
+
+##### Down-regulated
+
+```{r oraPlot2, message=FALSE, warning=FALSE, fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on significantly (FDR < 0.05) down-regulated genes in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+oraFile <- paste0(dataDir, "/downreg_ora_05.rds")
+if (!file.exists(oraFile)) {
+  downRegORA <- getGeneSets(downRegGenes, annotationData, bgGenes)
+  saveRDS(downRegORA, file=oraFile)
+} else {
+  downRegORA <- readRDS(oraFile)
+}
+
+allOras[[2]] <- list(result = downRegORA$result, 
+                     sig = "FDR < 0.05", expr = "Down-regulated")
+oraPlot <- gprofiler2::gostplot(downRegORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in Down-Regulated DEG List',
+                                       '(Threshold: FDR < 0.05)'),
+               xaxis = list(title = 'Annotation Dataset'), 
+               yaxis = list(title = '-log10(FDR) (capped at 10^-16)'))
+```
+
+
+<details><summary>Table \@ref(tab:ora2): Ten most significantly over-represented gene sets from each annotation source, based on the down-regulated gene list with threshold 0.05</summary>
+
+```{r ora2, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets(allOras[[2]], annotationData)
+```
+
+</details>
+<br/>
+
+The common terms in the gene sets listed in Table \@ref(tab:ora2) are translation, elongation, ribosomes, 
+autophagy, glucogenesis and synthesis of nucleotide sugars. Again, it is 
+logical that a cell affected by the accumulation of a misfolded protein would 
+down-regulate its protein synthesis (ribosomal assembly, 
+peptide translation and elongation, amino acid biosynthesis), in order to 
+prevent further aggregation. 
+Additionally, the down-regulation of autophagy is consistent with the 
+study's observations that MKD cells seem 
+unable to clear the misfolded Muc1 proteins through lysosomal degradation. 
+The other top terms from the annotation datasets are less cohesive: among them 
+are response to hypoxia, demethylation, HIG-1 signaling, and carcinoma pathways.
+
+<br/>
+
+##### All DEGs
+
+```{r oraPlot3, message=FALSE, warning=FALSE, fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on all significant (FDR < 0.05) DEGs in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+oraFile <- paste0(dataDir, "/alldegs_ora_05.rds")
+if (!file.exists(oraFile)) {
+  allGenes <- c(upRegGenes, downRegGenes)
+  sigORA <- getGeneSets(allGenes, annotationData, bgGenes)
+  saveRDS(sigORA, file=oraFile)
+} else {
+  sigORA <- readRDS(oraFile)
+}
+
+allOras[[3]] <- list(result = sigORA$result, 
+                     sig = "FDR < 0.05", expr = "All DEGs")
+oraPlot <- gprofiler2::gostplot(sigORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in DEG List (Threshold: FDR < 0.05)'),
+               xaxis = list(title = 'Annotation Dataset'))
+```
+
+<details><summary>Table \@ref(tab:ora3): Ten most significantly over-represented gene sets from each annotation source, based on the DEG list with threshold 0.05</summary>
+
+```{r ora3, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets(allOras[[3]], annotationData)
+```
+
+</details>
+<br/>
+
+Even though there are more significantly up-regulated genes than there are 
+down-regulated genes in our dataset (2560 vs. 2042), it seems that the 
+down-regulated pathways (specifically, ribosomal functions, translation, 
+elongation) were more significantly over-represented in all the annotation 
+datasets than the up-regulated pathways (Table \@ref(tab:ora3)).
+
+```{r compare1, warning=FALSE, message=FALSE}
+getNumSigPathways <- function(ora) {
+  return(length(which(ora$p_value < 0.05)))
+}
+
+compareNumGeneSets <- function(oras, fdrs, logFCs, caption) {
+  numPathways <- unlist(lapply(oras, getNumSigPathways))
+  
+  exprChanges <- unlist(lapply(logFCs, function(foldChange) {
+    if (foldChange == "0") {
+      return("All DEGs")
+    } else if (foldChange == "+") {
+      return("Up-regulated")
+    } else if (foldChange == "-") {
+      return("Down-regulated")
+    }
+  }))
+  
+  gsKable <- knitr::kable(
+    data.frame(`DEG Sig. Threshold` = fdrs, `Expression Change` = exprChanges,
+               `Num. Gene Sets` = numPathways,  check.names = FALSE), 
+    caption=caption, type="html")
+  kableExtra::kable_styling(gsKable, "condensed")
+}
+
+oras <- list(sigORA$result, upRegORA$result, downRegORA$result)
+compareNumGeneSets(oras, fdrs=rep("FDR < 0.05", 3), logFCs=c("0", "+", "-"),
+                   caption = paste("Number of significantly over-represented",
+                                   "gene sets in gene lists with threshold",
+                                   "FDR < 0.05."))
+```
+
+As expected, the cumulative ORA (all significantly regulated genes) returned 
+more gene sets than either of the individual ORAs (with only up- or down- 
+regulated genes) (Table \@ref(tab:compare1)). However, the cumulative ORA returned _fewer_ gene sets than 
+the sum of the gene sets from the individual ORAs. The ORA on only 
+down-regulated genes returned far fewer gene sets than the ORA with only 
+up-regulated genes (~30% as many gene sets), even though the down-regulated 
+gene list was almost 80% the length of the up-regulated gene list.
+
+<br/>
+
+#### FDR < 0.001
+
+Now that I have a big picture view of the enriched pathways in MKD cells, 
+I will use the gene lists generated by the stricter threshold (FDR < 0.001) to 
+identify the most important and significantly regulated pathways.
+
+##### Up-regulated
+
+```{r oraPlot4, warning=FALSE, message=FALSE, fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on all very significantly (FDR < 0.001) up-regulated genes in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+oraFile <- paste0(dataDir, "/upreg_ora_001.rds")
+if (!file.exists(oraFile)) {
+  veryUpRegORA <- getGeneSets(veryUpRegGenes, annotationData, bgGenes)
+  saveRDS(veryUpRegORA, file=oraFile)
+} else {
+  veryUpRegORA <- readRDS(oraFile)
+}
+
+allOras[[4]] <- list(result = veryUpRegORA$result, 
+                     sig = "FDR < 0.001", expr = "Up-regulated")
+oraPlot <- gprofiler2::gostplot(veryUpRegORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in Up-Regulated DEG List',
+                                       '(Threshold: FDR < 0.001)'),
+               xaxis = list(title = 'Annotation Dataset'))
+```
+
+<details><summary>Table \@ref(tab:ora4): Ten most significantly over-represented gene sets from each annotation source, based on the up-regulated gene list with threshold 0.001</summary>
+
+```{r ora4, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets(allOras[[4]], annotationData)
+```
+
+</details>
+<br/>
+
+The top gene sets returned by this analysis, listed in Table \@ref(tab:ora4), were almost exactly identical to 
+the top gene sets returned by the ORA with significantly (FDR < 0.05) 
+up-regulated genes (Table \@ref(tab:ora1)). The only difference is that the p-value associated with 
+each returned gene set is a lot smaller (and more significant) in this analysis 
+than the p-value from the previous (FDR < 0.05) analysis. This is probably 
+because the query gene list is smaller, and so the gene sets are even more 
+over-represented.
+
+```{r compare2, warning=FALSE, message=FALSE}
+oras <- list(upRegORA$result, veryUpRegORA$result)
+compareNumGeneSets(oras, fdrs=c("FDR < 0.05", "FDR < 0.001"), 
+                   logFCs=c("+", "+"), 
+                   caption = paste("Number of significantly over-represented",
+                                   "gene sets in up-regulated gene lists with",
+                                   "different thresholds."))
+```
+
+Table \@ref(tab:compare2) shows that the very significantly (FDR < 0.001) 
+up-regulated gene list returned 82 more significantly expressed gene sets 
+than the up-regulated gene list with FDR < 0.05.
+
+<br/>
+
+##### Down-regulated
+
+```{r oraPlot5, warning=FALSE, message=FALSE, fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on all very significantly (FDR < 0.001) down-regulated genes in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+oraFile <- paste0(dataDir, "/downreg_ora_001.rds")
+if (!file.exists(oraFile)) {
+  veryDownRegORA <- getGeneSets(veryDownRegGenes, annotationData, bgGenes)
+  saveRDS(veryDownRegORA, file=oraFile)
+} else {
+  veryDownRegORA <- readRDS(oraFile)
+}
+
+allOras[[5]] <- list(result = veryDownRegORA$result, 
+                     sig = "FDR < 0.001", expr = "Down-regulated")
+oraPlot <- 
+  gprofiler2::gostplot(veryDownRegORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in Down-Regulated DEG List',
+                                       '(Threshold: FDR < 0.001)'),
+               xaxis = list(title = 'Annotation Dataset'))
+```
+
+<details><summary>Table \@ref(tab:ora5): Ten most significantly over-represented gene sets from each annotation source, based on the down-regulated gene list with threshold 0.001</summary>
+
+```{r ora5, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets(allOras[[5]], annotationData)
+```
+
+</details>
+<br/>
+
+
+```{r compare3, message=FALSE, warning=FALSE, results='asis'}
+compareNumGeneSets(list(downRegORA$result, veryDownRegORA$result), 
+                   fdrs=c("FDR < 0.05", "FDR < 0.001"), 
+                   logFCs=c("-", "-"), 
+                   caption = paste("Number of significantly over-represented",
+                                   "gene sets in down-regulated gene lists with",
+                                   "different thresholds."))
+```
+
+As with the up-regulated ORAs, the gene sets returned in this analysis (listed in Table \@ref(tab:ora5)) are almost exactly the same and in nearly the same order as gene sets from the ORA with significantly 
+(FDR < 0.05) down-regulated genes (Table \@ref(tab:ora2)). Surprisingly, the p-values were _bigger_ 
+(less significant) in the ORA produced by the smaller gene list (stricter 
+threshold). This suggests that the less significant DEGs were important in 
+the down-regulated gene set enrichment analysis, since removing them resulted 
+in less significant results.
+
+The ORA from the stricter-thresholded down-regulated gene list (FDR < 0.001) 
+resulted in 93 more significant gene sets than the weaker-thresholded gene list 
+(FDR < 0.05) (Table \@ref(tab:compare3)).
+
+<br/>
+
+##### All DEGs
+
+```{r oraPlot6, warning=FALSE, message=FALSE,  fig.cap="A Manhattan plot showing all gene sets returned from running Fisher's Exact Test (via g:Profiler) on all very significant (FDR < 0.001) DEGs in GSE129943. Colours correspond to different annotation datasets (GO:BP, KEGG, Reactome, WikiPathways). The y-axis shows how significantly over-represented each gene set is (-log10FDR).", out.width="100%"}
+# Load or fetch ORA results for all very sig DEGs
+oraFile <- paste0(dataDir, "/alldegs_ora_001.rds")
+if (!file.exists(oraFile)) {
+  allGenes <- c(veryUpRegGenes, veryDownRegGenes)
+  verySigORA <- getGeneSets(allGenes, annotationData, bgGenes)
+  saveRDS(verySigORA, file=oraFile)
+} else {
+  verySigORA <- readRDS(oraFile)
+}
+
+# Save to list of ORAs
+allOras[[6]] <- list(result = verySigORA$result, 
+                     sig = "FDR < 0.001", expr = "All")
+
+oraPlot <- gprofiler2::gostplot(verySigORA, capped=TRUE, interactive=TRUE)
+plotly::layout(oraPlot, title = paste('Over-Representation of Gene Sets',
+                                       'in DEG List (Threshold: FDR < 0.001)'),
+               xaxis = list(title = 'Annotation Dataset'), 
+               yaxis = list(title = '-log10(FDR) (capped at 10^-16)'))
+```
+
+<details><summary>Table \@ref(tab:ora6): Ten most significantly over-represented gene sets from each annotation source, based on the DEG list with threshold 0.001 </summary>
+
+```{r ora6, message=FALSE, warning=FALSE, results='asis'}
+showTopSmallGeneSets(allOras[[6]], annotationData)
+```
+
+</details>
+<br/>
+
+Unlike the previous two ORAs, this analysis returned remarkably different gene 
+sets than its less significant counterpart (all DEGs, FDR < 0.05). The top gene 
+sets in this cumulative ORA (listed in Table \@ref(tab:ora6)) had primarily up-regulated gene sets, whereas the 
+previous cumulative ORA had mostly down-regulated gene sets (Table \@ref(tab:ora3)). In particular, 
+I noticed that gene sets related to ribosomes, 
+translation, and elongation did not make the top-ten list in this analysis, and 
+were instead replaced with gene sets related to viral response, cell cycle, and 
+interferon signaling.
+This reflects the results from 
+above, where the up-regulated ORA with FDR < 0.001 DEGs had more significant 
+p-values but the down-regulated ORA with FDR < 0.001 DEGs had less significant 
+p-values. Thus, it seems that using a more restricted gene list
+(with a more stringent threshold) causes up-regulated pathways to be more 
+significantly over-represented than down-regulated pathways. This suggests that 
+the most significant DEGs are up-regulated rather than down-regulated. The 
+volcano plot earlier in this report confirms this pattern: the up-regulated 
+DEGs had larger logFCs than the down-regulated DEGs, and the top part of the 
+plot was more densely populated with red dots (up-regulated genes) than blue 
+dots (down-regulated genes).
+
+```{r compare4, warning=FALSE, message=FALSE}
+oras <- list(sigORA$result, verySigORA$result)
+compareNumGeneSets(oras, fdrs=c("FDR < 0.05", "FDR < 0.001"), 
+                   logFCs=c("0", "0"), 
+                   caption = paste("Number of significantly over-represented",
+                                   "gene sets in DEG lists with two",
+                                   "different thresholds."))
+```
+
+Table \@ref(tab:compare4) shows that the ORA from the stricter-thresholded DEG list (FDR < 0.001) returned 109 more 
+significant gene sets than the weaker-thresholded DEG list (FDR < 0.05).
+
+```{r compare5, warning=FALSE, message=FALSE}
+oras <- list(verySigORA$result, veryUpRegORA$result, veryDownRegORA$result)
+compareNumGeneSets(oras, fdrs=rep("FDR < 0.001", 3), logFCs=c("0", "+", "-"),
+                   caption = paste("Number of significantly over-represented",
+                                   "gene sets in gene lists with threshold",
+                                   "FDR < 0.001."))
+```
+
+Table \@ref(tab:compare5) shows the number of gene sets returned in each ORA that used a DEG significance threshold of 0.001. As in the weaker-threshold (FDR < 0.05) case, the number of gene sets returned 
+by the cumulative ORA (all DEGs) was greater than either of the individual ORAs 
+(only up- or down-regulated DEGs), but less than the sum of the individual ORAs.
+Again, the down-regulated gene list returned much fewer gene sets than the 
+up-regulated gene list.
+
+<br/>
+
+Table \@ref(tab:compare6) summarizes the results of the six ORAs performed above. Each 
+cell shows the number of significantly over-represented gene sets found in 
+each gene list, and each gene list is characterized by the FDR threshold 
+(columns) and the expression change (rows).
+
+```{r compare6, warning=FALSE, message=FALSE}
+numSigPathways <- unlist(lapply(
+  list(sigORA$result, upRegORA$result, downRegORA$result),
+  getNumSigPathways
+))
+numVerySigPathways <- unlist(lapply(
+  list(verySigORA$result, veryUpRegORA$result, veryDownRegORA$result),
+  getNumSigPathways
+))
+
+numGeneSetsDf <- data.frame("FDR < 0.05" = numSigPathways, 
+                            "FDR < 0.001" = numVerySigPathways, check.names=F)
+rownames(numGeneSetsDf) <- c("All DEGs", "Up-regulated", "Down-regulated")
+
+summaryKable <- knitr::kable(
+  numGeneSetsDf, type="html", 
+  caption = paste("Number of significantly over-represented gene sets returned",
+                  "by each ORA"))
+kableExtra::kable_styling(summaryKable, "condensed")
+```
+
+In all cases, the stricter-threshold ORA returned more gene sets than its 
+weaker-threshold counterpart.
+
+<br/>
+
+## Discussion
+
+The original study claimed that (1) UPR is generally up-regulated in MKD cells 
+relative to normal kidney cells, and the ATF6 branch of UPR in particular 
+is up-regulated; and (2) misfolded MUC1 proteins are 
+trapped inside TMED9-containing vesicles in the early secretory pathway 
+(between the ER and the Golgi), preventing misfolded Muc1 from being 
+degraded in the lysosomes [@dvela2019]. I will investigate both of these 
+claims, using the two helper functions below.
+
+```{r warning=FALSE, message=FALSE}
+queryPathways <- function(queryTerm, oraList, significant=TRUE, 
+                          caseSensitive=FALSE) {
+  # initialize pathways data.frame
+  pathways <- as.data.frame(matrix(nrow=0, ncol=7))
+  colnames(pathways) <- c("sig", "expr","source", "term_id", "term_name", 
+                          "term_size", "p_value")
+  for (ora in oraList) {
+    # If significant option is set, remove any non-sig gene sets
+    if (significant) {
+      geneSets <- ora$result[ora$result$significant, ]
+    } else {
+      geneSets <- ora$result
+    }
+    
+    # Get all pathways with the query term from ORA results
+    if (any(grepl(queryTerm, geneSets$term_name, ignore.case=T))) {
+      df <- geneSets[grepl(queryTerm, geneSets$term_name, ignore.case=T), ]
+      df$sig <- ora$sig
+      df$expr <- paste(ora$expr, "DEGs")
+      pathways <- rbind(pathways, df[, colnames(pathways)])
+    }
+  }
+  
+  # Sort pathways by pathways ID, DEG expression change, and DEG threshold
+  pathways$expr <- factor(pathways$expr)
+  pathways <- pathways[with(pathways, 
+                            order(term_id, -expr, sig)), ]
+  
+  # Remove duplicate pathways, with preference to up/down regulated or 
+  # stricter threshold (FDR < 0.001)
+  pathways <- pathways[!duplicated(pathways$term_id), ]
+
+  # Print table
+  cap <- paste0("Pathways containing the term '", queryTerm, "'")
+  if (significant) {
+    cap <- paste(cap, 
+                 "that are significantly over-represented in any of the ORAs.")
+  }
+  pathwaysKable <- knitr::kable(
+    pathways, 
+    col.names = c("DEG Sig. Threshold", "DEG Expr. Change", 
+                  "Annotation Dataset", "Gene Set ID","Gene Set Name", 
+                  "Gene Set Size", "P-Value"),
+    caption=cap, row.names = FALSE, type="html", digits=42)
+  kableExtra::kable_styling(pathwaysKable, "condensed")
+}
+```
+
+
+### UPR
+
+First, I will search all the ORA results for significantly regulated pathways 
+that have the terms "UPR", "ATF6", "IRE1", or "PERK" in their name (ATF6, IRE1, 
+and PERK are the three branches of UPR).
+
+```{r upr, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("UPR", allOras, significant = T, caseSensitive = T)
+```
+
+```{r atf6, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("ATF6", allOras, significant = T)
+```
+
+```{r ire1, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("IRE1", allOras, significant = T)
+```
+
+```{r perk, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("PERK", allOras, significant = T)
+```
+
+<br/>
+
+Tables \@ref(tab:upr) - \@ref(tab:perk) reveal that there are no significantly enriched pathways containing the terms "UPR", "ATF6", "IRE1", or "PERK" in their name, respectively. As a 
+sanity check, I can turn off the significance requirement when querying pathways.
+
+<br/>
+
+```{r upr2, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("UPR", allOras, significant = F, caseSensitive = T)
+```
+
+```{r atf62, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("ATF6", allOras, significant = F)
+```
+
+<br/>
+
+Tables \@ref(tab:upr2) - \@ref(tab:atf62) prove that there are pathways associated with general UPR and 
+ATF6-mediated UPR, but that none of those pathways are significantly regulated. 
+They all have extremely large p-values (> 0.5), and therefore contradict the 
+results from the original study.
+
+<br/>
+
+### TMED9, ER-Golgi Vesicle Transport
+
+Next, I will look for pathways related to vesicle transport between the ER and 
+the Golgi, specifically TMED9-containing vesicles.
+
+```{r tmed9, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("TMED9", allOras, significant = TRUE)
+```
+
+```{r vesicle, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("vesicle", allOras, significant = TRUE)
+```
+
+```{r golgi, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("Golgi", allOras, significant = TRUE)
+```
+
+<br/>
+
+The search for TMED9 returned no results (Table \@ref(tab:tmed9)); however this is expected since TMED9 
+is simply a protein-binding cargo receptor which likely does not have any 
+pathways named after it.
+
+The other two queries did return results. Table \@ref(tab:vesicle) shows three pathways from GO:BP and WikiPathways that are significantly enriched in at least one of the thresholded gene lists, and Table \@ref(tab:golgi) shows two pathways from Reactome that are significantly enriched. The results suggest that vesicle-mediated transport is down-regulated and that there is differential regulation of COPI-independent Golgi-to-ER retrograde traffic (although it is unclear whether that pathway is up- or down-regulated). The original study shows that anterograde trafficking from the Golgi back to the ER is necessary for the lysosomal degradation and clearing of misfolded Muc1, and claims that interference in this early secretory pathways causes the progression of MKD [@dvela2019]. Thus, my ORA results align well with the study's results: down-regulation of vesicle-mediated transport and potential down-regulation of retrograde transport would both greatly hinder the secretory pathway, thus preventing accumulated misfolded Muc1 from being transported to the lysosome for degradation.
+
+<br/>
+
+### ER Stress
+
+Unfortunately, there are very few publications about MKD. This is partly 
+because MKD is difficult to diagnose and differentiate from other genetic 
+kidney disease; it is caused by a subtle mutation that is hard to identify and 
+it has no symptoms except for tubular fibrosis in the kidneys [@eckardt2015; 
+@blumenstiel2016]. All of 
+these factors make MKD challenging to study, so the field of evidence related 
+to this disease is extremely sparse.
+
+However, a review article by Sho Hasegawa and Reiko Inagi discusses the role of 
+UPR as well as many other pathways involved in kidney disease [@hasegawa2020]. Specifically, Hasegawa and Inagi explain the causes and responses of ER stress in kidney cells [@hasegawa2020]. A toxic proteinopathy like MKD is a form of ER stress [@dvela2019]; therefore, pathways related to ER stress should be enriched in MKD cells. This turns out to be the case for this RNASeq dataset.
+
+First, Hasegawa and Inagi state that oxidative stress and hypoxia can cause 
+pathogenic ER stress in the kidneys 
+[@hasegawa2020]. Table \@ref(tab:hypoxia) reveals that eight hypoxia-related gene sets are significantly enriched in one of the thresholded gene lists. Based on Table \@ref(tab:hypoxia) alone, it is unclear whether cellular response to hypoxia is up-regulated or down-regulated in MKD cells: the GO results suggest down-regulation while the Reactome results suggest up-regulation. 
+
+Second, Hasegawa and Inagi claim that ER stress in tubular cells can 
+cause tubular apoptosis [@hasegawa2020]. Apoptosis was one of the most-significantly 
+up-regulated pathways in our ORA tables (Tables \@ref(tab:ora1), \@ref(tab:ora4)). 
+Similarly, Table \@ref(tab:apoptosis) shows that apoptosis-related pathways in three different annotation datasets (KEGG, Reactome, WikiPathways) are highly up-regulated in MKD cells.
+
+Finally, Hasegawa and Inagi discuss how during the adaptive phase of ER stress, 
+crosstalk between mitochondria and the 
+ER result in increased calcium uptake [@hasegawa2020].
+Table \@ref(tab:calcium) shows that many calcium ion transport pathways from GO:BP and KEGG are significantly up-regulated in MKD cells.
+
+Combining all of these observations, it is clear that many of the pathways up-regulated in MKD cells are related to ER stress. Although these relationships are indirect (e.g., the pathways reveal symptoms of ER stress), they are abundant and significant. One would expect MKD cells to be strongly enriched in UPR, but also enriched in pathways related to ER stress. My ORA results do not support the former of those hypotheses, but they do support the latter. 
+Therefore, the results of my over-representation analysis are only partly supported 
+by existing publications.
+
+
+```{r hypoxia, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("hypoxia", allOras, significant = TRUE)
+```
+
+```{r apoptosis, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("apoptosis", allOras, significant = TRUE)
+```
+
+```{r calcium, warning=FALSE, message=FALSE, results='asis'}
+queryPathways("calcium", allOras, significant = TRUE)
+```
+
+<br/>
+
+## Conclusion
+The common patterns I saw in the over-representation analysis of GSE129943 
+was an up-regulation of pathways related to viral response and hypoxia, and a 
+down-regulation of pathways related to protein translation and vesicle-mediated transport. These results partly aligned with the original study [@dvela2019] and were partly supported by other publications. A fuller gene set enrichment analysis is required to investigate the discrepancies between my ORA results and existing literature on MKD.
+
+## References
