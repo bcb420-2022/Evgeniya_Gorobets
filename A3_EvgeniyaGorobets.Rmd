@@ -1,0 +1,74 @@
+---
+title: "Assignment 3: GSEA, Enrichment Map Visualization, Dark Matter"
+author: Evgeniya Gorobets
+date: "`r format(Sys.time(), '%d %b %Y')`"
+output:
+  bookdown::html_document2:
+    number_sections: FALSE
+    fig_caption: TRUE
+    toc: TRUE
+#bibliography: Assignment2/citations.bib
+#csl: Assignment2/apa.csl
+---
+
+## Introduction
+
+```{r warning=FALSE message=FALSE}
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  install.packages("kableExtra")
+}
+
+dataDir <- 'data'
+```
+
+
+## Non-Thresholded Gene Set Enrichment Analysis
+
+### Creating a Ranked List
+
+```{r}
+
+```
+
+
+### Gene Sets
+
+In order to easily compare by thresholded and non-thresholded gene set 
+analyses, I want to use the same gene sets when running GSEA as I did when 
+using g:Profiler.
+
+```{r warning=FALSE, message=FALSE}
+geneSetsDir <- paste0(dataDir, '/genesets/')
+
+goFile <- paste0(geneSetsDir, 'gobp.gmt')
+goUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/Human_GOBP_AllPathways_no_GO_iea_April_01_2022_symbol.gmt"
+
+# NOTE: Downloading KEGG from GSEA is hard because they required sign in
+# Make sure it is already downloaded before running this notebook
+keggFile <- paste0(geneSetsDir, 'kegg.gmt')
+
+wpFile <- paste0(geneSetsDir, 'wikipathways.gmt')
+wpUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/Pathways/Human_WikiPathways_April_01_2022_symbol.gmt"
+
+reacFile <- paste0(geneSetsDir, 'reactome.gmt')
+reacUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/Pathways/Human_Reactome_April_01_2022_symbol.gmt"
+
+geneSets <- data.frame(url=c(goUrl, wpUrl, reacUrl),
+                       row.names=c(goFile, wpFile, reacFile))
+
+for (geneSetFile in rownames(geneSets)) {
+  if (!file.exists(geneSetFile)) {
+    download.file(geneSets[geneSetFile, "url"], geneSetFile)
+  }
+}
+
+```
+
+THe GO:BP, Reactome, and WikiPathways GMT files are retrieved from BaderLabs. 
+I am choosing to use the most recent versions, from April 1st, 2022. I could 
+not find the KEGG pathways on the BaderLabs website, so I manually 
+downloaded the most recent KEGG files from MSigDb. The MSigDb version used 
+is v7.5.1 (updated January 2022).
+
+
+### GSEA
