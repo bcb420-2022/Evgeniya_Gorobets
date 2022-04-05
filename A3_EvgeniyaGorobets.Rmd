@@ -7,13 +7,82 @@ output:
     number_sections: FALSE
     fig_caption: TRUE
     toc: TRUE
-#bibliography: Assignment2/citations.bib
-#csl: Assignment2/apa.csl
+bibliography: references/a3_citations.bib
+csl: references/apa.csl
 ---
 
 ## Introduction
 
+This report performs non-thresholded gene set enrichment analysis on expression 
+data retrieved from GSE129943 and plots the results in an EnrichmentMap network.
+Additionally, this report performs a dark matter analysis of the GSE129943 
+dataset. The publication that produced this dataset can be accessed on the 
+[_Cell_ website](https://www.cell.com/cell/fulltext/S0092-8674(19)30741-X?_returnURL=https%3A%2F%2Flinkinghub.elsevier.com%2Fretrieve%2Fpii%2FS009286741930741X%3Fshowall%3Dtrue) [@dvela2019]. 
+This report builds on top of "Assignment 1: Dataset Selection and Initial 
+Processing" and "Assignment 2: Differential Gene Expression and Preliminary 
+Gene Set Enrichment Analysis", which can be downloaded and read at the following links: [A1](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment1.html),
+[A2](https://github.com/bcb420-2022/Evgeniya_Gorobets/blob/main/Assignment2.html). 
+The first report cleaned the bulk RNASeq data from GSE129943, removing any 
+low-count and duplicated genes. Additionally, Assignment 1 performed TMM 
+normalization on the read counts, visualized the normalized counts using MDS 
+plots, mean-variance plots, and distribution curves. The final dataset produced 
+by the A1 report had 14,241 genes and six samples, three of which are 
+replicates of normal human kidney cells and three of which are replicates of 
+Muc1 Kidney Disease (MKD) cells. The second report performed differential 
+gene expression analysis using the `edgeR` package [@robinson2010; @mccarthy2012; @chen2016] 
+and did a preliminary over-representation analysis (ORA) using g:Profiler 
+[@gprofiler2; @raudvere2019]. This report will perform a fuller gene set 
+enrichment analysis (non-thresholded, whereas A2 used thresholded analysis) 
+and identify key motifs and pathways enriched in MKD samples, as well as 
+address any DEGs that do not appear in the enrichment results.
+
+
+### Acknowledgements
+
+This R Notebook was developed by Evgeniya Gorobets as part of an assessment for 
+2022 BCB420H: Computational Systems Biology, University of Toronto, Toronto, CA.
+Specifically, this notebook was the final submitted product for Assignment 3 
+of the course.
+The journal entries accompanying this R Notebook are listed below.
+
+* [3.5 Non Thresholded Gene Set Enrichment Analysis in my GEO Dataset](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/3.5-Non-Thresholded-Gene-Set-Enrichment-Analysis-in-my-GEO-Dataset)
+* [3.6 Visualizing GSEA Results with Cytoscape and EnrichmentMap](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/3.6-Visualizing-GSEA-Results-with-Cytoscape-and-EnrichmentMap)
+* [3.7 Dark Matter Analysis](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/3.7-Dark-Matter-Analysis)
+* [3.8 A3 Report](https://github.com/bcb420-2022/Evgeniya_Gorobets/wiki/3.8-A3-Report)
+
+### Contributions
+
+This report was created in R [@baseR] with the `knitr` [@xie2013; 
+@xie2017; @xie2018] and `kableExtra` packages [@kableExtra].
+GSEA [TODO: cite]
+`GSA` [@gsa] was used to load and read GMT files to aid in GSEA and EnrichmentMap building.
+`BiocManager` to install `RCy3`
+`RCy3` [@RCy3] Cytoscape [TODO: cite] EnrichmentMap [TODO: cite] AutoAnnotate [TODO: cite]
+
+Images of the Cytoscape networks are displayed in the R Notebook using 
+`knitr` [@xie2013; @xie2017; @xie2018] and `htmltools` [@htmltools].
+`ComplexHeatmap` [@complexheatmap] was used to generate heatmaps of dark 
+matter identified in the expression data.
+The pipe operator from `magrittr` [@magrittr] was used to improve the 
+readability of the code.
+The report was created inside a Docker image [@merkel2014] whose base is 
+Rocker [@rocker].
+
+
+The packages used in Assignments 1 and 2 (the precursors to this report, sourced 
+at the beginning of this notebook) include `edgeR` [@robinson2010; @mccarthy2012; @chen2016],
+`ggplot2` [@ggplot2], `ComplexHeatmap` [@complexheatmap], `circlize` [@circlize],
+`gprofiler2` [@gprofiler2; @raudvere2019], and `plotly` [@plotly]. 
+TODO: include A1 packages
+
+### Set-Up
+
+In order to automate GSEA in this notebook, TODO: fill out
+
+In order to automate Cytoscape in this notebook, TODO: fill out
+
 ```{r, warning=FALSE, message=FALSE}
+# Install required packages
 if (!requireNamespace("kableExtra", quietly = TRUE)) {
   install.packages("kableExtra")
 }
@@ -23,9 +92,6 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 if (!requireNamespace("RCy3", quietly = TRUE)) {
   BiocManager::install("RCy3")
 }
-if (!requireNamespace("devtools", quietly = TRUE)) {
-  install.packages("devtools")
-}
 if (!requireNamespace("GSA", quietly = TRUE)) {
   install.packages("GSA")
 }
@@ -34,14 +100,40 @@ if (!requireNamespace("magrittr", quietly = TRUE)) {
 }
 library(magrittr)
 
+
+# Source child reports
 a2 <- knitr::knit_child('A2_EvgeniyaGorobets.Rmd', quiet=T)
 # Sourcing will take up a lot of memory so remove everything except what you need
 dontRemove <- c("normalizedCounts", "qlfAdjusted", "veryUpRegORA", 
                 "veryDownRegORA", "plotHeatmap")
 rm(list=setdiff(ls(), dontRemove))
 
+
+# Define key file paths
 dataDir <- 'data'
+figuresDir <- "figures"
+volumePath <- "C:/Users/Evgeniya/Documents/University of Toronto/BCB420/code/"
+baseUrl <- "http://host.docker.internal:1234/v1"
+
+# Check for GSEA and Cytoscape and required apps
+gseaPath <- "../GSEA_4.1.0/gsea-cli.sh"
+if (!file.exists(gseaPath)) {
+  stop(paste("Could not find GSEA installation at", gseaPath))
+}
+
+if(is.null(RCy3::cytoscapeVersionInfo(base.url=baseUrl))) {
+  stop("Could not connect to Cytoscape")
+}
+
+for (app in c("EnrichmentMap", "AutoAnnotate")) {
+  if (!grepl("status: Installed", RCy3::getAppStatus(app, base.url=baseUrl))) {
+    RCy3::installApp(app, base.url=baseUrl)
+  }
+}
+
 ```
+
+
 <br/>
 
 ## Non-Thresholded Gene Set Enrichment Analysis
@@ -141,7 +233,7 @@ downloadedGeneSets <- paste0(geneSetsDir, list.files(geneSetsDir), collapse=',')
 outputName <- "a3_gsea"
 minSetSize <- 15
 maxSetSize <- 200
-gseaCommand <- paste('../GSEA_4.1.0/gsea-cli.sh GSEAPreranked',
+gseaCommand <- paste(gseaPath, 'GSEAPreranked',
                      '-gmx', downloadedGeneSets, 
                      '-collapse No_Collapse -mode Abs_max_of_probes',
                      '-norm meandiv -nperm 1000 -rnd_seed timestamp',
@@ -160,7 +252,7 @@ Only run if there are not results yet
 gseaDir <- grep(outputName, list.files(dataDir), value=T)
 if (length(gseaDir) == 0) {
   # Run GSEA
-  system('chmod a+x ../GSEA_4.1.0/gsea-cli.sh')
+  system(paste('chmod a+x', gseaPath))
   system(gseaCommand)
   gseaDir <- grep(outputName, list.files(dataDir), value=T)
 } else if (length(gseaDir) > 1) {
@@ -314,7 +406,6 @@ strsplit(downloadedGeneSets, ",") %>%
   writeLines(combinedGmtFile)
 
 # Build out EnrichmentMap command
-baseUrl <- "http://host.docker.internal:1234/v1"
 # TODO: figure out what to actually use for these and what they mean
 pvalue=0.005
 qvalue=0.1
@@ -322,7 +413,6 @@ simMetric="COMBINED"
 threshold=0.375
 
 # Sadly, you need the volume path to be provided
-volumePath <- "C:/Users/Evgeniya/Documents/University of Toronto/BCB420/code/"
 gmtFilePath <- paste0(volumePath, combinedGmtFile)
 rankFilePath <- paste0(volumePath, rankFile)
 gseaResultsFilePath <- paste0(volumePath, reportDir, "/edb/results.edb")
@@ -356,10 +446,24 @@ RCy3::renameNetwork(title=networkName, network=networkId, base.url=baseUrl)
 
 ```
 
-Now, we visualize the initial network
 
+Now, I want to visualize the EnrichmentMap. To ensure that the entire network 
+is captured in an image, I need to use the functions `RCy3::fitContent()` and 
+`RCy3::exportImage()`. Unfortunately, both of these functions rely on the 
+function `RCy3::getNetworkViewSuid()`, which calls `RCy3::getNetworkSuid()` 
+without passing along the `base.url` argument. This bug means that invoking 
+either `RCy3::fitContent()` or `RCy3::exportImage()` from within the Docker 
+container results in a refused connection error. Therefore, I had to 
+implement my own versions of `getNetworkViewSuid()`, `fitContent()`, and 
+`exportImage()`, which roughly match the functionality of the original `RCy3` 
+functions but without the `base.url` bug. To avoid cluttering the report, I 
+have placed my implementations of these functions in the collapsible section 
+below.
 
-```{r initialNetwork, warning=FALSE, message=FALSE}
+<details>
+<summary>Click to expand</summary>
+
+```{r, warning=FALSE, message=FALSE}
 fitContent <- function(selected.only=FALSE, network=NULL, base.url=baseUrl) {
     view.SUID <- getNetworkViewSuid(network,base.url)
     if(selected.only){
@@ -386,7 +490,7 @@ getNetworkViewSuid <- function(network = NULL, base.url=baseUrl) {
     } 
 }
 
-exportImage<-function(filename, type="PNG", resolution=NULL, units=NULL, height=NULL, 
+exportImage <- function(filename, type="PNG", resolution=NULL, units=NULL, height=NULL, 
                       width=NULL, zoom=NULL, network=NULL, base.url=.defaultBaseUrl, overwriteFile=TRUE){
     cmd.string <- 'view export' # a good start
     
@@ -415,17 +519,26 @@ exportImage<-function(filename, type="PNG", resolution=NULL, units=NULL, height=
                         ' view=SUID:"',view.SUID,'"'), 
                  base.url = base.url)
 }
+```
 
+</details>
+
+Using my own versions of `fitContent()` and `exportImage()`, I can now define 
+a function to capture and save an image of the Cytoscape network.
+
+```{r initialNetwork, warning=FALSE, message=FALSE}
 # Code heavily borrowed from https://baderlab.github.io/Cytoscape_workflows/EnrichmentMapPipeline/Protocol2_createEM.html
+# TODO: cite
 visualizeEM <- function(emName, imgPath, parentDir) {
   fitContent(network=emName)
   exportImage(paste0(parentDir, imgPath), type="png", base.url=baseUrl, network=emName)
   htmltools::img(src=knitr::image_uri(imgPath))
 }
-figuresDir <- "figures/"
-visualizeEM(networkName, paste0(figuresDir, "a3_network_", networkId,".png"),
+visualizeEM(networkName, paste0(figuresDir, "/a3_network_", networkId,".png"),
             volumePath)
 ```
+
+
 
 Create an enrichment map and describe it (# nodes, # edges, thresholds).
 
@@ -461,7 +574,7 @@ annotateCmd <- paste0("autoannotate annotate-clusterBoosted",
                       " network=", networkName)
 clusters <- RCy3::commandsPOST(annotateCmd, base.url=baseUrl)
 clusterImgFile <- paste0(figuresDir, 
-                         "a3_network_clusters_expanded_", networkId,".png")
+                         "/a3_network_clusters_expanded_", networkId,".png")
 visualizeEM(networkName, clusterImgFile, volumePath)
 ```
 
@@ -471,7 +584,7 @@ This is obviously very cluttered
 layoutCmd <- paste0("autoannotate layout layout=CoSE network=", networkName)
 RCy3::commandsGET(layoutCmd, base.url=baseUrl)
 clusterCoseImgFile <- paste0(
-  figuresDir, "a3_network_clusters_expanded_cose_", networkId,".png")
+  figuresDir, "/a3_network_clusters_expanded_cose_", networkId,".png")
 visualizeEM(networkName, clusterCoseImgFile, volumePath)
 ```
 
@@ -486,7 +599,7 @@ RCy3::renameNetwork(title=summaryNetworkName,
                     network=as.numeric(summaryNetworkId), 
                     base.url=baseUrl)
 summaryImgFile <- paste0(
-  figuresDir, "a3_network_clusters_collapsed_", networkId,".png")
+  figuresDir, "/a3_network_clusters_collapsed_", networkId,".png")
 visualizeEM(summaryNetworkName, summaryImgFile, volumePath)
 ```
 
