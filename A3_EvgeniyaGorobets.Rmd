@@ -13,23 +13,77 @@ output:
 
 ## Introduction
 
-```{r warning=FALSE message=FALSE}
+```{r, warning=FALSE, message=FALSE}
 if (!requireNamespace("kableExtra", quietly = TRUE)) {
   install.packages("kableExtra")
 }
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+if (!requireNamespace("RCy3", quietly = TRUE)) {
+  BiocManager::install("RCy3")
+}
+if (!requireNamespace("devtools", quietly = TRUE)) {
+  install.packages("devtools")
+}
+if (!requireNamespace("GSA", quietly = TRUE)) {
+  install.packages("GSA")
+}
+if (!requireNamespace("magrittr", quietly = TRUE)) {
+  install.packages("magrittr")
+}
+library(magrittr)
+
+a2 <- knitr::knit_child('A2_EvgeniyaGorobets.Rmd', quiet=T)
+# Sourcing will take up a lot of memory so remove everything except what you need
+dontRemove <- c("normalizedCounts", "qlfAdjusted", "veryUpRegORA", 
+                "veryDownRegORA", "plotHeatmap")
+rm(list=setdiff(ls(), dontRemove))
 
 dataDir <- 'data'
 ```
-
+<br/>
 
 ## Non-Thresholded Gene Set Enrichment Analysis
 
 ### Creating a Ranked List
 
-```{r}
+The first step to running a non-thresholded gene set enrichment analysis is 
+to create a ranked list. I will rank my genes using the formula shown in class,
+except instead of using the p-value I will use the Benjamini-Hochberg adjusted 
+p-value (i.e., the FDR), since this is what I used in my thresholded analysis.
+$$ rank = -log_{10}(FDR) * sign(logFC)$$
 
+```{r}
+# Rank genes
+ranks <- -log10(qlfAdjusted$table$FDR) * sign(qlfAdjusted$table$logFC)
+rankedList <- data.frame(ensembl_id = rownames(qlfAdjusted$table),
+                         rank = ranks)
+rankedList <- rankedList[order(-ranks), ]
+
+# Save full ranked list
+write.table(rankedList, paste0(dataDir, "/ensembl_genes_ranked.rnk"), 
+            row.names=FALSE, quote=F, sep="\t")
+
+# Map ensembl gene ids to hugo symbols (using original counts df)
+rownames(normalizedCounts) <- normalizedCounts$Ensembl
+rankedList$GeneName <- normalizedCounts[rankedList$ensembl_id, "HGNC"]
+rankedList <- rankedList[, c("GeneName", "rank")]
+
+# Remove genes with no hugo symbols
+numGenesRemoved <- length(which(is.na(rankedList$GeneName)))
+rankedList <- rankedList[!is.na(rankedList$GeneName), ]
+rankFile <- paste0(dataDir, "/hugo_genes_ranked.rnk")
+write.table(rankedList, rankFile, row.names=FALSE, quote=F, sep="\t")
 ```
 
+Unfortunately, the gene sets are defined with HUGO symbols rather than 
+Ensembl gene IDs, so we have to map our ranked list back to the HGNCs. 
+From Assignment 1, we recall that not all genes mapped to a HUGO symbol, so 
+this will force us to exclude `r numGenesRemoved` from the non-thresholded 
+gene set enrichment analysis.
+
+<br/>
 
 ### Gene Sets
 
@@ -37,11 +91,11 @@ In order to easily compare by thresholded and non-thresholded gene set
 analyses, I want to use the same gene sets when running GSEA as I did when 
 using g:Profiler.
 
-```{r warning=FALSE, message=FALSE}
+```{r, warning=FALSE, message=FALSE}
 geneSetsDir <- paste0(dataDir, '/genesets/')
 
 goFile <- paste0(geneSetsDir, 'gobp.gmt')
-goUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/Human_GOBP_AllPathways_no_GO_iea_April_01_2022_symbol.gmt"
+goUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/GO/Human_GO_bp_no_GO_iea_symbol.gmt"
 
 # NOTE: Downloading KEGG from GSEA is hard because they required sign in
 # Make sure it is already downloaded before running this notebook
@@ -64,11 +118,535 @@ for (geneSetFile in rownames(geneSets)) {
 
 ```
 
-THe GO:BP, Reactome, and WikiPathways GMT files are retrieved from BaderLabs. 
+The GO:BP, Reactome, and WikiPathways GMT files are retrieved from BaderLabs. 
 I am choosing to use the most recent versions, from April 1st, 2022. I could 
 not find the KEGG pathways on the BaderLabs website, so I manually 
 downloaded the most recent KEGG files from MSigDb. The MSigDb version used 
-is v7.5.1 (updated January 2022).
+is v7.5.1 (updated January 2022). I chose to use GO:BP pathways with no IEAs 
+because that is what I used in my thresholded analysis and because there are 
+enough significantly enriched gene sets without using IEAs.
+
+TODO: add more details about the versions of the data sets if you can find it
+TODO: consider making URLS more general: see slide 30 of lecture 10
 
 
 ### GSEA
+
+Now with the rank file and the GMT files, I can run non-thresholded gene set 
+enrichment analysis using the GSEA CLI.
+
+
+```{r, warning=FALSE, message=FALSE}
+downloadedGeneSets <- paste0(geneSetsDir, list.files(geneSetsDir), collapse=',')
+outputName <- "a3_gsea"
+minSetSize <- 15
+maxSetSize <- 200
+gseaCommand <- paste('../GSEA_4.1.0/gsea-cli.sh GSEAPreranked',
+                     '-gmx', downloadedGeneSets, 
+                     '-collapse No_Collapse -mode Abs_max_of_probes',
+                     '-norm meandiv -nperm 1000 -rnd_seed timestamp',
+                     '-rnk', rankFile, '-scoring_scheme weighted', 
+                     '-rpt_label', outputName, '-create_svgs false',
+                     '-include_only_symbols true -make_sets true',
+                     '-plot_top_x 20 -set_max', maxSetSize, 
+                     '-set_min', minSetSize, '-zip_report false',
+                     '-out', dataDir)
+
+```
+
+Only run if there are not results yet
+
+```{r, warning=FALSE, message=FALSE}
+gseaDir <- grep(outputName, list.files(dataDir), value=T)
+if (length(gseaDir) == 0) {
+  # Run GSEA
+  system('chmod a+x ../GSEA_4.1.0/gsea-cli.sh')
+  system(gseaCommand)
+  gseaDir <- grep(outputName, list.files(dataDir), value=T)
+} else if (length(gseaDir) > 1) {
+  # Get most recent results
+  gseaDir <- sort(gseaDir, decreasing=TRUE)
+  gseaDir <- gseaDir[1]
+}
+```
+
+
+### GSEA Summary and Analysis
+
+To compare with our thresholded results, we will get the top five gene sets 
+from the positive (MKD cells) and negative (normal cells) report.
+
+```{r topGeneSets, warning=FALSE, message=FALSE}
+# Load GSEA results
+gseaFiles <- grep("gsea_report.*tsv", 
+                  list.files(paste0(dataDir, "/", gseaDir)), value=T)
+mkdReport <- grep("pos", gseaFiles, value=T)
+normReport <- grep("neg", gseaFiles, value=T)
+
+mkdDf <- read.delim(paste0(dataDir, "/", gseaDir, "/", mkdReport), 
+                    check.names=F)
+normDf <- read.delim(paste0(dataDir, "/", gseaDir, "/", normReport), 
+                     check.names=F)
+
+getGeneSetNames <- function(gsNames) {
+  return( strsplit(gsNames, "%") %>% 
+    lapply(function(name) {name[1]}) %>%
+    unlist() %>%
+    stringr::str_to_title() )
+}
+
+getGeneSetIds <- function(gsNames) {
+  return( strsplit(gsNames, "%") %>% 
+    lapply(function(name) {name[3]}) %>%
+    unlist() )
+}
+
+
+topMkdGeneSets <- knitr::kable(
+  data.frame("Accession ID"=getGeneSetIds(mkdDf$NAME[1:5]),
+             "Gene Set Name"=getGeneSetNames(mkdDf$NAME[1:5]),
+             check.names=F),
+  caption="Top 5 enriched gene sets in MKD cells")
+
+topNormGeneSets <- knitr::kable(
+  data.frame("Accession ID"=getGeneSetIds(normDf$NAME[1:5]),
+             "Gene Set Name"=getGeneSetNames(normDf$NAME[1:5]),
+             check.names=F),
+  caption="Top 5 enriched gene sets in normal cells")
+
+knitr::kables(list(topMkdGeneSets, topNormGeneSets),
+              caption=paste("Top Enriched Gene Sets in MKD vs. Normal Cells",
+                            "(Non-Thresholded Analysis)"))
+```
+
+```{r topOraGeneSets, warning=FALSE, message=FALSE}
+# Compare with thresholded results
+getTopOraGeneSets <- function(ora) {
+  geneSetDf <- ora$result
+  geneSetDf <- geneSetDf[(geneSetDf$term_size <= 200 & 
+                            geneSetDf$term_size >= 15), ]
+  geneSetDf <- geneSetDf[order(geneSetDf$p_value, decreasing=F), ]
+  return(geneSetDf)
+}
+
+topUpReg <- getTopOraGeneSets(veryUpRegORA)
+topDownReg <- getTopOraGeneSets(veryDownRegORA)
+
+upregDf <- knitr::kable(topUpReg[1:5, c("term_id", "term_name")],
+                        caption="Top 5 Upregulated Gene Sets",
+                        col.names=c("Accession ID", "Gene Set Name"), 
+                        row.names=F)
+downregDf <- knitr::kable(topDownReg[1:5, c("term_id", "term_name")],
+                          caption="Top 5 Downregulated Gene Sets",
+                          col.names=c("Accession ID", "Gene Set Name"), 
+                          row.names=F)
+knitr::kables(list(upregDf, downregDf),
+              caption=paste("Top Enriched Gene Sets in MKD Cells",
+                            "(Thresholded Analysis; FDR < 0.001)"))
+```
+
+
+
+The top gene sets show impressive consistency with the thresholded results.
+TODO: compare!
+
+To summarize my GSEA results, I will create a table of the enriched gene sets 
+(both positive and negative) to compare their p-values, enrichment scores, 
+leading edges, etc.
+
+```{r mkdGeneSets, warning=FALSE, message=FALSE}
+getSummary <- function(geneSetDf, reportDir, positive=TRUE) {
+  # Get stats
+  summaryDf <- geneSetDf[1:5, c("NAME", "ES", "NES", "NOM p-val", "FDR q-val",
+                                "FWER p-val")]
+  # Load report for each gene set and compute extra stats
+  extraStats <- lapply(summaryDf$NAME, function(gs) {
+    reportFile <- grep(paste0(gs, ".*tsv"), list.files(reportDir), value=T)
+    gsReport <- read.delim(paste0(reportDir, "/", reportFile), check.names=F)
+    
+    if (positive) {
+      i <- 1
+    } else {
+      i <- nrow(gsReport)
+    }
+    topGene <- gsReport$SYMBOL[i]
+    leadingEdgeSize <- length(which(gsReport$`CORE ENRICHMENT` == "Yes"))
+    return(c(leadingEdgeSize, topGene))
+  })
+  summaryDf <- cbind(summaryDf, do.call(rbind, extraStats))
+  
+  summaryDf$`Gene Set ID` <- getGeneSetIds(summaryDf$NAME)
+  summaryDf$`Gene Set Name` <- getGeneSetNames(summaryDf$NAME)
+  summaryDf$NAME <- NULL
+  
+  names(summaryDf)[6:7] <- c("Size of Leading Edge", "Top Gene")
+  
+  return(summaryDf[, c(8, 9, 1:7)])
+}
+
+reportDir <- paste0(dataDir, "/", gseaDir)
+knitr::kable(getSummary(mkdDf, reportDir, positive=T), digits=32,
+             caption="Summary of GSEA Results (Gene Sets Enriched in MKD Cells)")
+```
+
+```{r normGeneSets, warning=FALSE, message=FALSE}
+knitr::kable(getSummary(normDf, reportDir, positive=F), digits=32,
+             caption="Summary of GSEA Results (Gene Sets Enriched in Normal Cells)")
+```
+
+TODO: add some analysis about these genes
+
+<br/>
+
+## Enrichment Map
+
+### Building and Visualizing the Enrichment Map
+
+TODO: description
+
+```{r, warning=FALSE, message=FALSE}
+# Merge all GMTs into one GMT file
+combinedGmtFile <- paste0(dataDir, "/all_gene_sets.gmt")
+strsplit(downloadedGeneSets, ",") %>% 
+  unlist() %>%
+  lapply(function(geneSetFile) { return( readLines(geneSetFile) ) }) %>% 
+  unlist() %>% 
+  writeLines(combinedGmtFile)
+
+# Build out EnrichmentMap command
+baseUrl <- "http://host.docker.internal:1234/v1"
+# TODO: figure out what to actually use for these and what they mean
+pvalue=0.005
+qvalue=0.1
+simMetric="COMBINED"
+threshold=0.375
+
+# Sadly, you need the volume path to be provided
+volumePath <- "C:/Users/Evgeniya/Documents/University of Toronto/BCB420/code/"
+gmtFilePath <- paste0(volumePath, combinedGmtFile)
+rankFilePath <- paste0(volumePath, rankFile)
+gseaResultsFilePath <- paste0(volumePath, reportDir, "/edb/results.edb")
+
+emCommand <- paste0('enrichmentmap build analysisType=GSEA ',
+                    'gmtFile="', gmtFilePath, '"',
+                    ' pvalue=', pvalue, ' qvalue=', qvalue,
+                    ' similaritycutoff=', threshold,
+                    ' coefficients=', simMetric, 
+                    ' ranksDataset1="', rankFilePath, '"',
+                    ' enrichmentsDataset1="', gseaResultsFilePath, '"',
+                    ' filterByExpressions=false'
+                   #" expressionfile=", optionally load expression file; otherwise ranks are used
+)
+
+# Check connection with cytoscape
+if (RCy3::cytoscapePing(base.url=baseUrl) == "You are connected to Cytoscape!") {
+  networkId <- RCy3::commandsGET(emCommand, base.url=baseUrl)
+}
+
+# Activate backup if network fails
+if(grepl("Failed", networkId)){
+  # TODO: backup
+} else {
+  networkId <- as.numeric(networkId)
+}
+
+# Rename network
+networkName <- paste0("A3-EM-Network-", networkId)
+RCy3::renameNetwork(title=networkName, network=networkId, base.url=baseUrl)
+
+```
+
+Now, we visualize the initial network
+
+
+```{r initialNetwork, warning=FALSE, message=FALSE}
+fitContent <- function(selected.only=FALSE, network=NULL, base.url=baseUrl) {
+    view.SUID <- getNetworkViewSuid(network,base.url)
+    if(selected.only){
+        RCy3::commandsPOST(paste0('view fit selected view=SUID:',view.SUID), 
+                           base.url = base.url)
+    } else {
+        RCy3::commandsPOST(paste0('view fit content view=SUID:',view.SUID), 
+                           base.url = base.url)
+    }
+}
+
+getNetworkViewSuid <- function(network = NULL, base.url=baseUrl) {
+    net.SUID <- RCy3::getNetworkSuid(network, base.url)
+    any.views <- RCy3::getNetworkViews(net.SUID, base.url)
+    
+    if(is.null(any.views)){
+        return(NULL)
+    }
+    else if(length(any.views)>1) {
+        message("Warning: This network has multiple views. Returning last.")
+        tail(any.views,n=1)
+    } else {
+        any.views
+    } 
+}
+
+exportImage<-function(filename, type="PNG", resolution=NULL, units=NULL, height=NULL, 
+                      width=NULL, zoom=NULL, network=NULL, base.url=.defaultBaseUrl, overwriteFile=TRUE){
+    cmd.string <- 'view export' # a good start
+    
+    # view must be supplied
+    view.SUID <- getNetworkViewSuid(network, base.url)
+    
+    # optional args
+    if(!is.null(resolution))
+        cmd.string <- paste0(cmd.string,' Resolution="',resolution,'"')
+    if(!is.null(units))
+        cmd.string <- paste0(cmd.string,' Units="',units,'"')
+    if(!is.null(height))
+        cmd.string <- paste0(cmd.string,' Height="',height,'"')
+    if(!is.null(width))
+        cmd.string <- paste0(cmd.string,' Width="',width,'"')
+    if(!is.null(zoom))
+        cmd.string <- paste0(cmd.string,' Zoom="',zoom,'"')
+    
+    ext <- paste0(".",tolower(type),"$")
+    if (!grepl(ext,filename))
+        filename <- paste0(filename,".",tolower(type))
+
+    RCy3::commandsPOST(paste0(cmd.string,
+                        ' OutputFile="',filename,'"',
+                        ' options="',toupper(type),'"',
+                        ' view=SUID:"',view.SUID,'"'), 
+                 base.url = base.url)
+}
+
+# Code heavily borrowed from https://baderlab.github.io/Cytoscape_workflows/EnrichmentMapPipeline/Protocol2_createEM.html
+visualizeEM <- function(emName, imgPath, parentDir) {
+  fitContent(network=emName)
+  exportImage(paste0(parentDir, imgPath), type="png", base.url=baseUrl, network=emName)
+  htmltools::img(src=knitr::image_uri(imgPath))
+}
+figuresDir <- "figures/"
+visualizeEM(networkName, paste0(figuresDir, "a3_network_", networkId,".png"),
+            volumePath)
+```
+
+Create an enrichment map and describe it (# nodes, # edges, thresholds).
+
+```{r networkStats, warning=FALSE, message=FALSE}
+networkStats <- RCy3::analyzeNetwork(base.url=baseUrl)
+nodeTable <- RCy3::getTableColumns(table = "node", network = networkName, 
+                                   base.url = baseUrl)
+
+knitr::kable(data.frame("Num. Nodes"=networkStats['nodeCount'],
+                        "Num. Edges"=networkStats['edgeCount'],
+                        "Avg. Degree"=networkStats['avNeighbors'],
+                        "Max. Degree"=max(nodeTable$Degree),
+                        check.names=FALSE, row.names=""),
+             caption="Properties of Enrichment Map")
+```
+
+
+### Annotating the Enrichment Map
+
+Annotate the enrichment map. (use AutoAnnotate)
+
+```{r}
+# Set annotation parameters
+
+clusterAlgo <- "MCL"
+labelColumn  <- "EnrichmentMap::GS_DESCR"
+useClusterMaker <- "true"
+
+annotateCmd <- paste0("autoannotate annotate-clusterBoosted", 
+                      " clusterAlgorithm=", clusterAlgo,
+                      " labelColumn=", labelColumn,
+                      " useClusterMaker=", useClusterMaker,
+                      " network=", networkName)
+clusters <- RCy3::commandsPOST(annotateCmd, base.url=baseUrl)
+clusterImgFile <- paste0(figuresDir, 
+                         "a3_network_clusters_expanded_", networkId,".png")
+visualizeEM(networkName, clusterImgFile, volumePath)
+```
+
+This is obviously very cluttered
+
+```{r}
+layoutCmd <- paste0("autoannotate layout layout=CoSE network=", networkName)
+RCy3::commandsGET(layoutCmd, base.url=baseUrl)
+clusterCoseImgFile <- paste0(
+  figuresDir, "a3_network_clusters_expanded_cose_", networkId,".png")
+visualizeEM(networkName, clusterCoseImgFile, volumePath)
+```
+
+Finally, we collapse and summarize it
+
+```{r}
+summaryCmd <- paste0("autoannotate summary includeUnclustered=true network=", 
+                     networkName)
+summaryNetworkId <- RCy3::commandsGET(summaryCmd, base.url=baseUrl)
+summaryNetworkName <- paste0(networkName, "-Summary")
+RCy3::renameNetwork(title=summaryNetworkName, 
+                    network=as.numeric(summaryNetworkId), 
+                    base.url=baseUrl)
+summaryImgFile <- paste0(
+  figuresDir, "a3_network_clusters_collapsed_", networkId,".png")
+visualizeEM(summaryNetworkName, summaryImgFile, volumePath)
+```
+
+
+TODO: Modify the image to make it publication ready (legends, title, etc.)
+
+Collapse your network to a theme network. What are the major themes present in this analysis? Do they fit with the model? Are there any novel pathways or themes?
+
+TODO: examine motifs by looking at subnetworks
+
+<br/>
+
+## Dark Matter Analysis
+
+### Loading All Genes
+
+To identify dark matter, I will first load in all the gene sets that I used 
+during GSEA and concatenate them into a single mapping of gene set names to 
+genes.
+
+```{r, warning=FALSE, message=FALSE}
+allGMTs <- GSA::GSA.read.gmt(combinedGmtFile)
+allGeneSets <- setNames(allGMTs$genesets, allGMTs$geneset.names)
+rm(allGMTs)
+```
+
+Next, I need to get all the genes that were in the gene sets (i.e., all genes 
+in my universe of genes).
+
+```{r, warning=FALSE, message=FALSE}
+allGenes <- allGeneSets %>% unlist() %>% unique()
+```
+
+Third, I want to get all genes that were present in my enriched gene sets. 
+
+```{r, warning=FALSE, message=FALSE}
+allEnrichedGeneSets <- c(mkdDf$NAME, normDf$NAME)
+genesInEnrichedSets <- allGeneSets[allEnrichedGeneSets] %>% unlist() %>% unique()
+```
+
+Finally, I want all genes that were in my expression data, which I can 
+retrieve from my ranked list.
+
+```{r, warning=FALSE, message=FALSE}
+expressedGenes <- rankedList$GeneName
+```
+
+<br/>
+
+### Finding Dark Matter
+
+Now that I have retrieved and created all my gene lists, I can identify 
+dark matter. I will consider four types of dark matter:
+
+* Genes that did not map to HUGO symbols and were thus excluded from the GSEA
+* Genes that have no annotations
+* Genes that have only IEAs
+* Genes that have annotations that were filtered out because of the size of the 
+gene sets
+
+To plot the gene expression of our dark matter genes, we will use the 
+`plotHeatmap()` function defined in A2. 
+
+```{r, warning=FALSE, message=FALSE}
+plotDarkMatterHeatmaps <- function(darkMatterGenes, sigGenes, countsMatrix) {
+  sigDarkMatter <- intersect(darkMatterGenes, sigGenes)
+  h1 <- plotHeatmap(countsMatrix[darkMatterGenes, ], 
+                    title="All Dark Matter Genes")
+  h2 <- plotHeatmap(countsMatrix[sigDarkMatter, ], 
+                    title="Significantly Expressed Dark Matter Genes (FDR < 0.05)")
+  return(list(h1, h2))
+}
+
+counts <- as.matrix(normalizedCounts[3:8])
+rownames(counts) <- normalizedCounts$Ensembl
+sigGenes <- rownames(qlfAdjusted$table)[qlfAdjusted$table$FDR < 0.05]
+```
+
+
+#### Unmapped Genes
+
+```{r unmappedGenes, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap="Scaled and Normalized Gene Expression of Unmapped Genes"}
+unmappedGenes <- normalizedCounts$Ensembl[is.na(normalizedCounts$HGNC)]
+plotDarkMatterHeatmaps(unmappedGenes, sigGenes, counts) 
+```
+
+
+<br/>
+
+#### Unenriched Genes
+
+because they had no annotations, had only IEA annotations, or their gene sets didnt fit the bill
+
+```{r unenrichedGenes, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap="Scaled and Normalized Gene Expression of Genes not in Enriched Gene Sets"}
+unenrichedGenes <- setdiff(expressedGenes, genesInEnrichedSets)
+unenrichedGenesEnsembl <- 
+  normalizedCounts$Ensembl[normalizedCounts$HGNC %in% unenrichedGenes]
+plotDarkMatterHeatmaps(unenrichedGenesEnsembl, sigGenes, counts)
+```
+
+
+<br/>
+
+### IEA Genes
+
+Next, we will determine which genes had only IEA annotations and therefore 
+were not found in enrichment results
+
+```{r ieaGenes, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap="Scaled and Normalized Gene Expression of Genes that only have IEA Annotations"}
+# Get pathways including IEA annotations
+ieaFile <- paste0(dataDir, 'gobp_iea.gmt')
+ieaUrl <- "http://download.baderlab.org/EM_Genesets/current_release/Human/symbol/GO/Human_GO_bp_with_GO_iea_symbol.gmt"
+
+if (!file.exists(ieaFile)) {
+  download.file(ieaUrl, ieaFile)
+}
+
+# Get all genes listed in GO:BP pathways with IEAs
+ieaGmt <- GSA::GSA.read.gmt(ieaFile)
+ieaGenes <- ieaGmt$genesets %>% unlist() %>% unique()
+
+# Get genes listed ONLY in pathways with IEAs
+ieaOnlyGenes <- setdiff(ieaGenes, allGenes)
+
+# Get expression genes that only have IEAs
+ieaExprGenes <- intersect(ieaOnlyGenes, expressedGenes)
+
+# Map to ENSEMBL IDs and make heatmap
+ieaGenesEnsembl <- 
+  normalizedCounts$Ensembl[normalizedCounts$HGNC %in% ieaExprGenes]
+plotDarkMatterHeatmaps(ieaGenesEnsembl, sigGenes, counts)
+```
+
+
+<br/>
+
+#### Unannotated Genes
+
+```{r unannotatedGenes, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap="Scaled and Normalized Gene Expression of Unannotated Genes"}
+# Get genes not found in any gene sets
+unannotatedGenes <- setdiff(expressedGenes, allGenes)
+
+# Remove IEA genes
+unannotatedGenes <- setdiff(unannotatedGenes, ieaExprGenes)
+
+# Map to ENSEMBL and plot
+unannotedGenesEnsembl <- 
+  normalizedCounts$Ensembl[normalizedCounts$HGNC %in% unannotatedGenes]
+plotDarkMatterHeatmaps(unannotedGenesEnsembl, sigGenes, counts)
+```
+
+
+<br/>
+
+
+
+##  Interpretation and detailed view of results
+The most important aspect of the analysis is relating your results back to the initial data and question.
+
+Do the enrichment results support conclusions or mechanism discussed in the original paper? How do these results differ from the results you got from Assignment #2 thresholded methods
+Can you find evidence, i.e. publications, to support some of the results that you see. How does this evidence support your result?
+
+
