@@ -7,8 +7,8 @@ output:
     number_sections: FALSE
     fig_caption: TRUE
     toc: TRUE
-bibliography: Assignment2/citations.bib
-csl: Assignment2/apa.csl
+bibliography: references/a2_citations.bib
+csl: references/apa.csl
 ---
 
 ## Introduction
@@ -30,7 +30,7 @@ The journal entries accompanying this R Notebook are listed below.
 
 ### Contributions
 
-This report was created in R [@baseR] with the `knitr` [@xie2013, 
+This report was created in R [@baseR] with the `knitr` [@xie2013; 
 @xie2017; @xie2018] and `kableExtra` packages [@kableExtra]. 
 `edgeR` [@robinson2010; @mccarthy2012; @chen2016] was 
 used to estimate dispersion and perform differential gene expression analysis. 
@@ -59,7 +59,7 @@ if(!requireNamespace("gprofiler2", quietly = TRUE)) {
   install.packages("gprofiler2")
 }
 if (!requireNamespace("ComplexHeatmap", quietly = TRUE)) {
-  install.packages("ComplexHeatmap")
+  BiocManager::install("ComplexHeatmap")
 }
 # circlize::colorRamp2 required for continuous color scaling in ComplexHeatmap
 if (!requireNamespace("circlize", quietly = TRUE)) {
@@ -72,7 +72,7 @@ if (!requireNamespace("plotly", quietly = TRUE)) {
 dataDir <- 'data'
 
 # Source A1 to get normalized counts
-a1 <- knitr:: knit_child('./Assignment1/Assignment1.Rmd', quiet=T)
+a1 <- knitr:: knit_child('Assignment1.Rmd', quiet=T)
 expressionSet <- normalizedCounts
 ```
 
@@ -511,8 +511,8 @@ it is the platform I am most familiar with [@raudvere2019; @gprofiler2].
 ### Annotation Datasets
 To get the most insight into our data and retrieve all possible significant 
 pathways, I will use all the pathway annotation datasets available in 
-g:Profiler. This includes GO Biological Processes [@ashburner2000go, 
-@gene2021go], KEGG pathways [@kanehisa2000kegg; @kanehisa2019kegg, 
+g:Profiler. This includes GO Biological Processes [@ashburner2000go; 
+@gene2021go], KEGG pathways [@kanehisa2000kegg; @kanehisa2019kegg; 
 @kanehisa2021kegg], Reactome data [@gillespie2022reactome], and WikiPathways 
 [@martens2021wikipathways]. 
 I will not include electronic GO annotations because my 
